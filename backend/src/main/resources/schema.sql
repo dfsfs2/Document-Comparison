@@ -24,3 +24,9 @@ CREATE TABLE IF NOT EXISTS document_job_report (
     details JSON NOT NULL,
     FOREIGN KEY (job_id) REFERENCES document_job (id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS user_knowledge (
+    owner_id BIGINT NOT NULL PRIMARY KEY,
+    rules JSON NOT NULL,
+    FOREIGN KEY (owner_id) REFERENCES app_user (id) ON DELETE CASCADE
+);

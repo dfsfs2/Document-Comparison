@@ -22,7 +22,9 @@ docker compose up -d --build
 
 开启辅助识别时，每份文档最多有 32 个待判断的短段落发送给百炼，每段最多 90 个字符。RAG 检索会将部分短段落及知识库规则送去生成向量。关闭后整份文档留在本地服务内。
 
-可直接编辑 [agent/knowledge.json](agent/knowledge.json) 添加或调整知识库条目。每条包含唯一的 `id`、`title` 和 `rule`。Compose 将文件挂载为只读，Python 在后续任务检测到修改时重新建立向量索引。当前知识库规模使用进程内向量检索即可。
+登录后，从顶部导航进入 **RAG 知识库**。按页面引导新增规则，也可以搜索或删除规则。使用 **试检索** 可以预览匹配结果。试检索默认使用本地关键词，勾选百炼向量检索时，会把查询和规则发送给百炼生成向量。
+
+每个账号的规则独立保存在 MySQL，每个知识库最多保存 100 条。首次进入知识库或首次使用百炼辅助套版时，会从 [agent/knowledge.json](agent/knowledge.json) 复制预置规则。这个文件可用于调整尚未初始化账号的预置内容。套版时使用当前账号的最新规则，Python 按规则内容缓存向量索引。
 
 [百炼兼容接口与地域地址](https://docs.modelstudio.console.alibabacloud.com/en/model-studio/base-url) · [百炼文本向量 API](https://docs.modelstudio.console.alibabacloud.com/zh/model-studio/text-embedding-synchronous-api)
 
@@ -39,7 +41,7 @@ docker compose up -d --build
 | React 19.3 / TypeScript 7 / Vite 8 | 登录、选择文件、启动套版、任务记录和下载 |
 | Java 21 / Spring Boot | 密码哈希、会话鉴权、上传入口、任务与下载授权 |
 | Python / FastAPI | DOCX 套版、内容校验、百炼调用、RAG 检索 |
-| MySQL | 账号、任务和生成的 DOCX |
+| MySQL | 账号、RAG 知识库、任务、套版报告和生成的 DOCX |
 | Redis | 登录会话和 CSRF 状态 |
 
 前端通过同源 `/api` 访问 Java。Python、MySQL、Redis 只在 Compose 内网监听。默认配置用于本机开发，Compose 入口绑定到回环地址。

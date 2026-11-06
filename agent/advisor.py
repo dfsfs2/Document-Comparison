@@ -74,6 +74,10 @@ def load_knowledge(revision):
     return json.loads(KNOWLEDGE_PATH.read_text(encoding="utf-8"))
 
 
+def default_knowledge():
+    return load_knowledge(KNOWLEDGE_PATH.stat().st_mtime_ns)
+
+
 @lru_cache(maxsize=8)
 def index_knowledge(base, key, model, texts):
     client = Bailian()
@@ -83,9 +87,10 @@ def index_knowledge(base, key, model, texts):
 
 
 class Advisor:
-    def __init__(self, use_cloud):
+    def __init__(self, use_cloud, knowledge=None):
         self.client = Bailian()
         self.use_cloud = use_cloud
+        self.knowledge = knowledge
         self.rules = set()
         self.calls = 0
         self.errors = 0
@@ -100,27 +105,36 @@ class Advisor:
             return "mixed" if self.calls else "fallback"
         return "bailian" if self.calls else "local"
 
-    def retrieve(self, snippets):
-        knowledge = load_knowledge(KNOWLEDGE_PATH.stat().st_mtime_ns)
+    def retrieve(self, query):
+        knowledge = default_knowledge() if self.knowledge is None else self.knowledge
+        if not knowledge:
+            return [], "empty"
         texts = tuple(entry["title"] + " " + entry["rule"] for entry in knowledge)
-        if not texts:
-            return []
-        query = "识别文档正文、标题和标题层级。" + "\n".join(list(snippets.values())[:8])
-        try:
-            vectors = index_knowledge(self.client.base, self.client.key, self.client.embedding_model, texts)
-            vector, = self.client.embed([query])
-            ranked = sorted(range(len(texts)), key=lambda i: similarity(vector, vectors[i]), reverse=True)
-        except (OSError, ValueError, TypeError, KeyError, IndexError) as error:
-            LOG.warning("Bailian embeddings unavailable: %s", type(error).__name__)
-            terms = features(query)
-            ranked = sorted(range(len(texts)), key=lambda i: sum((features(texts[i]) & terms).values()),
-                            reverse=True)
-        return [knowledge[i] for i in ranked[:3]]
+        mode = "keyword"
+        if self.use_cloud and not self.client.key:
+            mode = "unconfigured"
+        if self.use_cloud and self.client.key:
+            try:
+                vectors = index_knowledge(self.client.base, self.client.key, self.client.embedding_model, texts)
+                vector, = self.client.embed([query])
+                ranked = sorted(range(len(texts)), key=lambda i: similarity(vector, vectors[i]), reverse=True)
+                return [knowledge[i] for i in ranked[:3]], "vector"
+            except (OSError, ValueError, TypeError, KeyError, IndexError) as error:
+                LOG.warning("Bailian embeddings unavailable: %s", type(error).__name__)
+                mode = "fallback"
+        terms = features(query)
+        literal = query.casefold().strip()
+        scores = [sum((features(text) & terms).values()) + 2 * int(bool(literal) and literal in text.casefold())
+                  for text in texts]
+        ranked = sorted((i for i, score in enumerate(scores) if score > 0), key=scores.__getitem__, reverse=True)
+        return [knowledge[i] for i in ranked[:3]], mode
 
     def classify(self, snippets):
         if not snippets or not self.use_cloud or not self.client.key:
             return {}
-        knowledge = self.retrieve(snippets)
+        query = "识别文档正文、标题和标题层级。" + "\n".join(list(snippets.values())[:8])
+        matches, _ = self.retrieve(query)
+        knowledge = [{name: entry[name] for name in ("id", "title", "rule")} for entry in matches]
         try:
             labels = self.client.classify(snippets, knowledge)
             if not isinstance(labels, dict):

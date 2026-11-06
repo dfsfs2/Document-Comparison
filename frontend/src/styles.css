@@ -22,6 +22,9 @@ svg { width: 22px; height: 22px; flex: none; }
 .top-label { color: var(--muted); font-size: 10px; letter-spacing: .12em; font-weight: 600; border-left: 1px solid var(--border); padding-left: 12px; }
 .account { font-size: 13px; color: var(--muted); min-width: 0; }
 .account span { overflow: hidden; text-overflow: ellipsis; }
+.top-nav { display: flex; gap: 5px; }
+.top-nav a { padding: 7px 10px; border-radius: 8px; color: var(--muted); text-decoration: none; font-size: 13px; white-space: nowrap; }
+.top-nav a:hover, .top-nav a[aria-current] { background: #e9ede3; color: var(--green); }
 main { width: min(960px, calc(100% - 44px)); margin: auto; }
 .hero { padding: 62px 0 32px; }
 .eyebrow { display: flex; align-items: center; gap: 8px; color: var(--green); font-weight: 700; font-size: 12px; letter-spacing: .13em; }
@@ -90,6 +93,32 @@ h2 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
 .report-diff strong small { font-weight: normal; }
 .report-pagination { justify-content: center; color: var(--muted); font-size: 13px; }
 .report-pagination button:disabled { opacity: .5; }
+.rag-hero { padding-top: 40px; }
+.rag-guide ol { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0 0 14px; padding: 0; list-style: none; counter-reset: guide; }
+.rag-guide li { counter-increment: guide; padding: 12px; border-radius: 8px; background: #f7f8f5; line-height: 1.6; font-size: 13px; }
+.rag-guide li strong::before { content: counter(guide) ". "; color: var(--green); }
+.rag-guide li span { display: block; margin-top: 4px; color: var(--muted); }
+.rag-columns { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 14px; margin-top: 14px; align-items: start; }
+.rag-sidebar, .rag-form { display: grid; gap: 12px; }
+.rag-field { display: grid; gap: 5px; color: var(--green); font-size: 13px; font-weight: 650; }
+.rag-field input, .rag-field textarea { width: 100%; padding: 9px; border: 1px solid var(--border); border-radius: 8px; background: white; color: #262a23; font: inherit; font-weight: 400; }
+.rag-field textarea { resize: vertical; }
+.rag-field input:focus, .rag-field textarea:focus { outline: 2px solid #849a77; outline-offset: 1px; }
+.rag-check { display: flex; align-items: center; gap: 5px; font-size: 13px; }
+.rag-check input { accent-color: var(--green); }
+.rag-form small, .rag-notice { color: var(--muted); font-size: 12px; }
+.rag-notice { color: var(--green); }
+.rag-rules { padding: 0; margin: 13px 0 0; list-style: none; }
+.rag-rules > li { border-top: 1px solid var(--border); padding: 10px 0; }
+.rag-rule-heading { display: flex; align-items: center; gap: 7px; }
+.rag-rule-heading h3 { margin: 0; font-size: 14px; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.rag-rule-heading .badge { margin: 0; white-space: nowrap; }
+.rag-rules p, .rag-matches p { margin: 6px 0; font-size: 13px; line-height: 1.6; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.rag-confirm { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 9px; font-size: 12px; }
+.danger { padding: 7px 10px; border: 1px solid #9d312c; border-radius: 9px; background: #9d312c; color: white; font-size: 13px; }
+.rag-matches { margin-top: 12px; font-size: 13px; }
+.rag-matches ol { padding-left: 20px; }
+.rag-matches li { margin: 7px 0; overflow-wrap: anywhere; }
 .login { max-width: 450px; }
 .login form { display: grid; gap: 14px; }
 .login label { display: grid; gap: 7px; font-size: 13px; font-weight: 600; }
@@ -102,6 +131,8 @@ footer { padding: 23px 0 33px; text-align: center; color: var(--muted); font-siz
 footer span { margin: 0 5px; }
 @media (max-width: 600px) {
   .top-inner { padding: 12px 15px; }
+  .top-inner:has(.top-nav) { flex-wrap: wrap; }
+  .top-nav { order: 3; width: 100%; }
   .top-label { display: none; }
   main { width: calc(100% - 28px); }
   .hero { padding: 40px 0 22px; }
@@ -114,6 +145,7 @@ footer span { margin: 0 5px; }
   .report-heading { flex-direction: column; align-items: flex-start; }
   .report-diff { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .report-diff > strong { grid-column: 1 / -1; }
+  .rag-columns, .rag-guide ol { grid-template-columns: minmax(0, 1fr); }
   .jobs li { gap: 6px; }
   time { display: none; }
 }

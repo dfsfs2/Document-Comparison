@@ -132,6 +132,12 @@ class FormatTest(TestCase):
 
 
 class AdvisorTest(TestCase):
+    def test_retrieves_only_the_provided_library_and_preserves_an_empty_library(self):
+        custom = {"id": "custom", "title": "交付标准", "rule": "独立成段的验收标准按二级标题处理。"}
+        self.assertEqual(Advisor(False, [custom]).retrieve("验收标准"), ([custom], "keyword"))
+        self.assertEqual(Advisor(False, [custom]).retrieve("完全无关"), ([], "keyword"))
+        self.assertEqual(Advisor(False, []).retrieve("标题"), ([], "empty"))
+
     def test_passes_retrieved_knowledge_and_ignores_invented_roles(self):
         with patch.dict("os.environ", {"DASHSCOPE_API_KEY": "test-key"}):
             advisor = Advisor(True)

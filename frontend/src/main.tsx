@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { RagPage, type Rule, type SearchResult } from './rag'
 import { modeNames, ReportPage, reportLink, type Job, type JobReport } from './report'
 import './styles.css'
 
@@ -18,18 +19,22 @@ async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   return (body ? JSON.parse(body) : undefined) as T
 }
 
-function mutate<T>(path: string, session: Session, body?: BodyInit, contentType?: string) {
+function mutate<T>(path: string, session: Session, body?: BodyInit, contentType?: string, method = 'POST') {
   const headers = new Headers({ [session.csrfHeader]: session.csrfToken })
   if (contentType) headers.set('Content-Type', contentType)
-  return api<T>(path, { method: 'POST', headers, body })
+  return api<T>(path, { method, headers, body })
 }
 
-function readReportId() {
-  return /^#report\/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i.exec(window.location.hash)?.[1]
+function readReportId(hash: string) {
+  return /^#report\/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i.exec(hash)?.[1]
 }
 
 function loadReport(id: string) {
   return api<JobReport>(`/jobs/${id}/report`)
+}
+
+function loadRules() {
+  return api<Rule[]>('/knowledge')
 }
 
 function Icon({ type }: { type: 'logo' | 'doc' | 'arrow' | 'download' | 'history' | 'spark' }) {
@@ -55,7 +60,9 @@ function App() {
   const [reference, setReference] = useState<File | null>(null)
   const [target, setTarget] = useState<File | null>(null)
   const [cloud, setCloud] = useState(false)
-  const [reportId, setReportId] = useState(readReportId)
+  const [hash, setHash] = useState(() => window.location.hash)
+  const reportId = readReportId(hash)
+  const showRag = hash === '#rag'
 
   async function loadSession() {
     setSession(await api<Session>('/session'))
@@ -67,7 +74,7 @@ function App() {
 
   useEffect(() => {
     const readHash = () => {
-      setReportId(readReportId())
+      setHash(window.location.hash)
       window.scrollTo(0, 0)
     }
     window.addEventListener('hashchange', readHash)
@@ -153,10 +160,14 @@ function App() {
   return <>
     <header className="top"><div className="top-inner">
       <div className="brand"><span className="brand-mark"><Icon type="logo" /></span>文档对照<span className="top-label">WORD 工作台</span></div>
+      {username && <nav className="top-nav" aria-label="工作台导航">
+        <a href="#" aria-current={!showRag ? 'page' : undefined}>文档套版</a>
+        <a href="#rag" aria-current={showRag ? 'page' : undefined}>RAG 知识库</a>
+      </nav>}
       {username && <div className="account"><span>{username}</span><button className="quiet" onClick={signOut} disabled={busy}>退出登录</button></div>}
     </div></header>
     <main>
-      {(!username || !reportId) && <section className="hero">
+      {(!username || (!reportId && !showRag)) && <section className="hero">
         <div className="eyebrow"><span /> 模板套版工作台</div>
         <h1>用一份文档，为另一份排版。</h1>
         <p>从参照文档提取样式，应用到目标文档。<br className="mobile-break" />保留目标原文、表格数据与图片。</p>
@@ -173,7 +184,12 @@ function App() {
         <button className="text-button" onClick={() => { setRegister(!register); setError('') }} disabled={busy}>
           {register ? '已有账号？返回登录' : '没有账号？创建账号'}
         </button>
-      </section> : reportId ? <ReportPage key={reportId} id={reportId} load={loadReport} /> : <>
+      </section> : showRag && session ? <RagPage load={loadRules}
+        add={draft => mutate<Rule>('/knowledge', session, JSON.stringify(draft), 'application/json')}
+        remove={id => mutate<void>(`/knowledge/${encodeURIComponent(id)}`, session, undefined, undefined, 'DELETE')}
+        retrieve={(query, useCloud) => mutate<SearchResult>('/knowledge/query', session,
+          JSON.stringify({ query, useCloud }), 'application/json')} />
+        : reportId ? <ReportPage key={reportId} id={reportId} load={loadReport} /> : <>
         <section className="panel">
           <div className="section-heading"><span className="step">01</span><h2>选择文档</h2><span className="badge">DOCX</span></div>
           <form onSubmit={submit}>

@@ -3,7 +3,10 @@ package com.doccompare;
 import java.time.Duration;
 import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.core.io.ByteArrayResource;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
@@ -14,13 +17,16 @@ import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.server.ResponseStatusException;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 @Component
 class DocumentAgent {
     private final RestClient client;
+    private final ObjectMapper json;
 
-    DocumentAgent(RestClient.Builder builder, @Value("${app.agent.url}") String url,
+    DocumentAgent(RestClient.Builder builder, ObjectMapper json, @Value("${app.agent.url}") String url,
                   @Value("${app.agent.token}") String token) {
+        this.json = json;
         var factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(Duration.ofSeconds(5));
         factory.setReadTimeout(Duration.ofSeconds(120));
@@ -28,11 +34,14 @@ class DocumentAgent {
                 .requestFactory(factory).build();
     }
 
-    Result format(byte[] reference, byte[] target, boolean useCloud) {
+    Result format(byte[] reference, byte[] target, boolean useCloud, List<KnowledgeLibrary.Rule> knowledge) {
         var parts = new LinkedMultiValueMap<String, Object>();
         parts.add("reference", document(reference, "reference.docx"));
         parts.add("target", document(target, "target.docx"));
         parts.add("use_cloud", Boolean.toString(useCloud));
+        var headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        parts.add("knowledge", new HttpEntity<>(json.writeValueAsString(knowledge), headers));
         try {
             Result result = client.post().uri("/format")
                     .contentType(MediaType.MULTIPART_FORM_DATA).body(parts)
@@ -53,6 +62,32 @@ class DocumentAgent {
         } catch (RestClientException error) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "连接文档处理服务失败。");
         }
+    }
+
+    List<KnowledgeLibrary.Rule> defaultKnowledge() {
+        try {
+            List<KnowledgeLibrary.Rule> rules = client.get().uri("/knowledge/defaults").retrieve()
+                    .body(new ParameterizedTypeReference<List<KnowledgeLibrary.Rule>>() {});
+            if (rules != null) {
+                return rules;
+            }
+        } catch (RestClientException error) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "无法读取预置知识库。", error);
+        }
+        throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "无法读取预置知识库。");
+    }
+
+    KnowledgeLibrary.SearchResult queryKnowledge(KnowledgeLibrary.AgentQuery query) {
+        try {
+            var result = client.post().uri("/knowledge/query").contentType(MediaType.APPLICATION_JSON)
+                    .body(query).retrieve().body(KnowledgeLibrary.SearchResult.class);
+            if (result != null && result.matches() != null && result.mode() != null) {
+                return result;
+            }
+        } catch (RestClientException error) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "知识库检索服务暂不可用。", error);
+        }
+        throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "知识库检索服务暂不可用。");
     }
 
     private static ByteArrayResource document(byte[] bytes, String name) {

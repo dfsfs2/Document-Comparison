@@ -19,6 +19,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.csrf.CsrfToken;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -46,14 +47,16 @@ class WorkspaceController {
     private final DocumentAgent agent;
     private final TransactionTemplate transactions;
     private final ObjectMapper json;
+    private final KnowledgeLibrary knowledge;
 
     WorkspaceController(JdbcClient jdbc, PasswordEncoder passwords, DocumentAgent agent,
-                        TransactionTemplate transactions, ObjectMapper json) {
+                        TransactionTemplate transactions, ObjectMapper json, KnowledgeLibrary knowledge) {
         this.jdbc = jdbc;
         this.passwords = passwords;
         this.agent = agent;
         this.transactions = transactions;
         this.json = json;
+        this.knowledge = knowledge;
     }
 
     @GetMapping("/session")
@@ -94,7 +97,8 @@ class WorkspaceController {
         String referenceName = filename(reference);
         String targetName = filename(target);
         long owner = ownerId(user);
-        var result = agent.format(reference.getBytes(), target.getBytes(), useCloud);
+        var rules = useCloud ? knowledge.rules(owner) : List.<KnowledgeLibrary.Rule>of();
+        var result = agent.format(reference.getBytes(), target.getBytes(), useCloud, rules);
         String id = UUID.randomUUID().toString();
         return transactions.execute(status -> {
             jdbc.sql("""
@@ -109,6 +113,28 @@ class WorkspaceController {
             return jdbc.sql("SELECT " + JOB_FIELDS + " FROM document_job j WHERE j.id = :id AND j.owner_id = :owner")
                     .param("id", id).param("owner", owner).query(WorkspaceController::job).single();
         });
+    }
+
+    @GetMapping("/knowledge")
+    List<KnowledgeLibrary.Rule> knowledge(Principal user) {
+        return knowledge.rules(ownerId(user));
+    }
+
+    @PostMapping("/knowledge")
+    @ResponseStatus(HttpStatus.CREATED)
+    KnowledgeLibrary.Rule addRule(Principal user, @RequestBody KnowledgeLibrary.Draft draft) {
+        return knowledge.add(ownerId(user), draft);
+    }
+
+    @DeleteMapping("/knowledge/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    void deleteRule(Principal user, @PathVariable String id) {
+        knowledge.remove(ownerId(user), id);
+    }
+
+    @PostMapping("/knowledge/query")
+    KnowledgeLibrary.SearchResult queryKnowledge(Principal user, @RequestBody KnowledgeLibrary.Query query) {
+        return knowledge.query(ownerId(user), query);
     }
 
     @GetMapping("/jobs/{id}/report")
