@@ -100,6 +100,8 @@ h2 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
 .rag-guide li span { display: block; margin-top: 4px; color: var(--muted); }
 .rag-columns { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 14px; margin-top: 14px; align-items: start; }
 .rag-sidebar, .rag-form { display: grid; gap: 12px; }
+.rag-input-modes { display: flex; flex-wrap: wrap; gap: 6px; }
+.rag-input-modes [aria-pressed="true"] { background: var(--green); color: white; border-color: var(--green); }
 .rag-field { display: grid; gap: 5px; color: var(--green); font-size: 13px; font-weight: 650; }
 .rag-field input, .rag-field textarea { width: 100%; padding: 9px; border: 1px solid var(--border); border-radius: 8px; background: white; color: #262a23; font: inherit; font-weight: 400; }
 .rag-field textarea { resize: vertical; }
@@ -107,6 +109,7 @@ h2 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
 .rag-check { display: flex; align-items: center; gap: 5px; font-size: 13px; }
 .rag-check input { accent-color: var(--green); }
 .rag-form small, .rag-notice { color: var(--muted); font-size: 12px; }
+.rag-form .rag-notice, .rag-form .error { margin: 0; overflow-wrap: anywhere; }
 .rag-notice { color: var(--green); }
 .rag-rules { padding: 0; margin: 13px 0 0; list-style: none; }
 .rag-rules > li { border-top: 1px solid var(--border); padding: 10px 0; }

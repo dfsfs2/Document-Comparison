@@ -137,6 +137,19 @@ class WorkspaceController {
         return knowledge.query(ownerId(user), query);
     }
 
+    @PostMapping(path = "/knowledge/extract", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    DocumentAgent.ExtractedText extractKnowledge(@RequestParam MultipartFile file) throws IOException {
+        String original = file.getOriginalFilename();
+        if (original == null || file.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择含有文字的文档。");
+        }
+        String name = original.toLowerCase(Locale.ROOT);
+        if (!name.endsWith(".docx") && !name.endsWith(".txt")) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择 .docx 或 .txt 文件。");
+        }
+        return agent.extract(file.getBytes(), name.endsWith(".docx") ? "source.docx" : "source.txt");
+    }
+
     @GetMapping("/jobs/{id}/report")
     JobReport report(Principal user, @PathVariable UUID id) {
         return jdbc.sql("SELECT " + JOB_FIELDS + ", report.details "

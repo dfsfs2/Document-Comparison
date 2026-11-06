@@ -7,9 +7,13 @@ export type SearchResult = { matches: Rule[]; mode: string }
 type Props = {
   load: () => Promise<Rule[]>
   add: (draft: Draft) => Promise<Rule>
+  extract: (file: File) => Promise<string>
   remove: (id: string) => Promise<void>
   retrieve: (query: string, useCloud: boolean) => Promise<SearchResult>
 }
+
+const ruleLimit = 1000
+const fileLimit = 10 * 1024 * 1024
 
 const searchModes: Record<string, string> = {
   vector: '百炼向量检索',
@@ -19,7 +23,7 @@ const searchModes: Record<string, string> = {
   empty: '知识库为空',
 }
 
-export function RagPage({ load, add, remove, retrieve }: Props) {
+export function RagPage({ load, add, extract, remove, retrieve }: Props) {
   const [rules, setRules] = useState<Rule[] | null>(null)
   const [loadError, setLoadError] = useState('')
   const [filter, setFilter] = useState('')
@@ -30,7 +34,13 @@ export function RagPage({ load, add, remove, retrieve }: Props) {
   const [error, setError] = useState('')
   const [queryError, setQueryError] = useState('')
   const [queryResult, setQueryResult] = useState<SearchResult | null>(null)
+  const [inputMode, setInputMode] = useState<'text' | 'document'>('text')
+  const [ruleText, setRuleText] = useState('')
+  const [extracting, setExtracting] = useState(false)
+  const [importError, setImportError] = useState('')
+  const [importedName, setImportedName] = useState('')
   const titleField = useRef<HTMLInputElement>(null)
+  const ruleLength = ruleText.trim().length
 
   useEffect(() => {
     let active = true
@@ -41,23 +51,45 @@ export function RagPage({ load, add, remove, retrieve }: Props) {
 
   async function create(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (extracting || ruleLength === 0 || ruleLength > ruleLimit) return
     const form = event.currentTarget
     const values = new FormData(form)
     setPending(true)
     setError('')
     setNotice('')
     try {
-      const saved = await add({ title: String(values.get('title')), rule: String(values.get('rule')) })
+      const saved = await add({ title: String(values.get('title')), rule: ruleText })
       setRules(current => current ? [saved, ...current] : current)
       setFilter('')
       setQueryResult(null)
       setQueryError('')
       setNotice('规则已保存，可以试检索。')
+      setRuleText('')
+      setImportedName('')
+      setImportError('')
       form.reset()
     } catch (error) {
       setError((error as Error).message)
     } finally {
       setPending(false)
+    }
+  }
+
+  async function importDocument(file: File) {
+    setImportError('')
+    if (!/\.(docx|txt)$/i.test(file.name) || file.size === 0 || file.size > fileLimit) {
+      setImportError('请选择非空的 .docx 或 .txt 文件，大小不超过 10 MB。')
+      return
+    }
+    setExtracting(true)
+    try {
+      const text = await extract(file)
+      setRuleText(text)
+      setImportedName(file.name)
+    } catch (error) {
+      setImportError((error as Error).message)
+    } finally {
+      setExtracting(false)
     }
   }
 
@@ -114,7 +146,7 @@ export function RagPage({ load, add, remove, retrieve }: Props) {
       <div className="section-heading"><span className="step">01</span><h2 id="rag-guide">如何加入 RAG 规则</h2></div>
       <ol>
         <li><strong>给规则起名</strong><span>写明文档类型或用途，例如「技术报告的章节标题」。</span></li>
-        <li><strong>写清判断条件</strong><span>例如「独立成段的 2.1 适用范围按二级标题处理，带完整说明的句子按正文处理」。</span></li>
+        <li><strong>填写或导入规则内容</strong><span>可以手动写清判断条件，也可以导入 Word 或 TXT，再编辑提取出的文字。</span></li>
         <li><strong>保存并验证</strong><span>用下方试检索查看命中的规则，套版时勾选「百炼辅助识别」。</span></li>
       </ol>
       <button className="quiet" onClick={() => titleField.current?.focus()}>去新增规则</button>
@@ -155,10 +187,35 @@ export function RagPage({ load, add, remove, retrieve }: Props) {
             <label className="rag-field">规则名称
               <input name="title" ref={titleField} required maxLength={80} placeholder="例如 技术报告的章节标题" />
             </label>
-            <label className="rag-field">规则内容
-              <textarea name="rule" required rows={4} maxLength={1000} placeholder="写出判断条件，最好附一个例子" />
-            </label>
-            <button className="primary" disabled={busy || rules.length >= 100}>保存规则</button>
+            <div className="rag-input-modes" role="group" aria-label="规则内容输入方式">
+              <button type="button" className="quiet" aria-pressed={inputMode === 'text'}
+                disabled={extracting || pending} onClick={() => setInputMode('text')}>文本输入</button>
+              <button type="button" className="quiet" aria-pressed={inputMode === 'document'}
+                disabled={extracting || pending} onClick={() => setInputMode('document')}>导入文档</button>
+            </div>
+            {inputMode === 'document' && <>
+              <label className="rag-field">选择文档
+                <input type="file" accept=".docx,.txt" disabled={busy || extracting}
+                  onClick={event => { event.currentTarget.value = '' }}
+                  onChange={event => {
+                    const file = event.currentTarget.files?.[0]
+                    if (file) void importDocument(file)
+                  }} />
+              </label>
+              <small>支持 DOCX 和 TXT，单份最大 10 MB。提取后可编辑文字再保存。</small>
+              {extracting ? <p className="rag-notice" role="status">正在提取文档文字…</p>
+                : importedName && <p className="rag-notice" role="status">已导入 {importedName}</p>}
+              {importError && <p className="error" role="alert">{importError}</p>}
+            </>}
+            <div className="rag-field">
+              <label htmlFor="rag-rule-content">规则内容</label>
+              <textarea id="rag-rule-content" name="rule" required rows={inputMode === 'document' ? 6 : 4} value={ruleText}
+                disabled={extracting || pending} onChange={event => setRuleText(event.target.value)}
+                placeholder={inputMode === 'document' ? '导入后的文字会填在这里' : '写出判断条件，最好附一个例子'} />
+            </div>
+            <small>{ruleLength} / {ruleLimit} 字{ruleLength > ruleLimit ? '，请保留需要保存的内容并缩短至上限以内。' : ''}</small>
+            <button className="primary"
+              disabled={busy || extracting || rules.length >= 100 || ruleLength === 0 || ruleLength > ruleLimit}>保存规则</button>
             {rules.length >= 100 && <small>已达到 100 条规则上限。</small>}
           </form>
         </section>

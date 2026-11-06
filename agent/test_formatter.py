@@ -4,6 +4,7 @@ from unittest.mock import patch
 from zipfile import ZipFile, ZipInfo
 
 from advisor import Advisor
+from knowledge_import import extract_text
 from formatter import Document, InvalidDocument, W, content_projection, format_document, prop, val
 
 HEADER = b'<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>Original header</w:t></w:r></w:p></w:hdr>'
@@ -129,6 +130,31 @@ class FormatTest(TestCase):
                      ("word\\media\\picture.png", b"data")]:
             with self.subTest(part=part), self.assertRaisesRegex(InvalidDocument, "目标文档.*路径"):
                 format_document(reference, package(TARGET_BODY, extra_parts=[part]), Advisor(False))
+
+
+class KnowledgeImportTest(TestCase):
+    def test_extracts_word_paragraphs_and_table_text_in_order(self):
+        body = """
+<w:p><w:r><w:t>规则一</w:t><w:tab/><w:t>条件</w:t><w:br/><w:t>另起一行</w:t></w:r>
+<w:del><w:r><w:t>已删除文字</w:t></w:r></w:del></w:p>
+<w:tbl><w:tr><w:tc><w:p><w:r><w:t>表格内容</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+"""
+        original = package(body, extra_parts=[("word\\theme/", b"")])
+        self.assertEqual(extract_text(original, "规则.DOCX"), "规则一\t条件\n另起一行\n表格内容")
+
+    def test_extracts_chinese_text_and_normalizes_newlines(self):
+        text = "  标题规则\r\n正文规则  "
+        for encoding in ("utf-8-sig", "utf-16", "gb18030"):
+            with self.subTest(encoding=encoding):
+                self.assertEqual(extract_text(text.encode(encoding), "规则.txt"), "标题规则\n正文规则")
+
+    def test_rejects_empty_binary_and_oversized_extraction(self):
+        with self.assertRaisesRegex(InvalidDocument, "没有可提取"):
+            extract_text(b" \r\n", "empty.txt")
+        with self.assertRaisesRegex(InvalidDocument, "UTF-8"):
+            extract_text(b"\x00binary", "invalid.txt")
+        with self.assertRaisesRegex(InvalidDocument, "100,000"):
+            extract_text(b"a" * 100001, "long.txt")
 
 
 class AdvisorTest(TestCase):

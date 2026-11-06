@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from advisor import Advisor, default_knowledge, setting
 from formatter import InvalidDocument, MAX_FILE, format_document
+from knowledge_import import extract_text
 
 app = FastAPI(title="Document Comparison Agent", docs_url=None, redoc_url=None, openapi_url=None)
 LOG = logging.getLogger(__name__)
@@ -48,6 +49,14 @@ def knowledge_defaults():
 def knowledge_query(request: KnowledgeQuery):
     matches, mode = Advisor(request.use_cloud, [rule.model_dump() for rule in request.knowledge]).retrieve(request.query)
     return {"matches": matches, "mode": mode}
+
+
+@app.post("/knowledge/extract", dependencies=[Depends(authenticate)])
+def extract_knowledge(file: UploadFile = File()):
+    try:
+        return {"text": extract_text(file.file.read(MAX_FILE + 1), file.filename or "")}
+    except InvalidDocument as error:
+        raise HTTPException(422, str(error)) from error
 
 
 @app.post("/format", dependencies=[Depends(authenticate)])

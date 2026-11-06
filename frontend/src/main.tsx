@@ -186,6 +186,11 @@ function App() {
         </button>
       </section> : showRag && session ? <RagPage load={loadRules}
         add={draft => mutate<Rule>('/knowledge', session, JSON.stringify(draft), 'application/json')}
+        extract={async file => {
+          const data = new FormData()
+          data.append('file', file)
+          return (await mutate<{ text: string }>('/knowledge/extract', session, data)).text
+        }}
         remove={id => mutate<void>(`/knowledge/${encodeURIComponent(id)}`, session, undefined, undefined, 'DELETE')}
         retrieve={(query, useCloud) => mutate<SearchResult>('/knowledge/query', session,
           JSON.stringify({ query, useCloud }), 'application/json')} />

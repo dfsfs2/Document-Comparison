@@ -53,15 +53,37 @@ class DocumentAgent {
             }
             return result;
         } catch (RestClientResponseException error) {
-            if (error.getStatusCode().value() == 422) {
-                AgentError body = error.getResponseBodyAs(AgentError.class);
-                throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_CONTENT,
-                        body == null ? "文档格式无法处理。" : body.detail());
-            }
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "文档处理服务暂不可用。");
+            throw documentFailure(error);
         } catch (RestClientException error) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "连接文档处理服务失败。");
         }
+    }
+
+    ExtractedText extract(byte[] bytes, String filename) {
+        var parts = new LinkedMultiValueMap<String, Object>();
+        parts.add("file", document(bytes, filename));
+        try {
+            ExtractedText result = client.post().uri("/knowledge/extract")
+                    .contentType(MediaType.MULTIPART_FORM_DATA).body(parts)
+                    .retrieve().body(ExtractedText.class);
+            if (result != null && result.text() != null && !result.text().isBlank()) {
+                return result;
+            }
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "文档处理服务返回了无效的提取结果。");
+        } catch (RestClientResponseException error) {
+            throw documentFailure(error);
+        } catch (RestClientException error) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "连接文档处理服务失败。");
+        }
+    }
+
+    private static ResponseStatusException documentFailure(RestClientResponseException error) {
+        if (error.getStatusCode().value() == 422) {
+            AgentError body = error.getResponseBodyAs(AgentError.class);
+            return new ResponseStatusException(HttpStatus.UNPROCESSABLE_CONTENT,
+                    body == null ? "文档格式无法处理。" : body.detail());
+        }
+        return new ResponseStatusException(HttpStatus.BAD_GATEWAY, "文档处理服务暂不可用。");
     }
 
     List<KnowledgeLibrary.Rule> defaultKnowledge() {
@@ -100,5 +122,6 @@ class DocumentAgent {
     }
 
     record AgentError(String detail) {}
+    record ExtractedText(String text) {}
     record Result(byte[] output, int paragraphs, int tables, String mode, List<String> rules, JsonNode report) {}
 }
