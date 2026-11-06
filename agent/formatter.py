@@ -2,7 +2,6 @@
 from collections import Counter, defaultdict
 from copy import deepcopy
 from io import BytesIO
-from pathlib import PurePosixPath
 import re
 from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
 
@@ -44,6 +43,18 @@ class InvalidDocument(ValueError):
     pass
 
 
+def package_part_name(entry):
+    name = entry.orig_filename
+    # Some Word producers write Windows separators in empty ZIP directory markers.
+    if entry.file_size == 0 and name.endswith(("/", "\\")):
+        name = name.replace("\\", "/")
+    components = name.removesuffix("/").split("/")
+    if ("\\" in name or "\x00" in name or re.match(r"^[A-Za-z]:", name)
+            or any(part in ("", ".", "..") for part in components)):
+        raise InvalidDocument("文档包内有不受支持的部件路径，请另存为标准 .docx 后重试。")
+    return name
+
+
 def node(name, **values):
     element = xml.Element(W + name)
     for key, value in values.items():
@@ -75,13 +86,15 @@ class Document:
                 raise InvalidDocument("每个文档最大支持 10 MB。")
             with ZipFile(BytesIO(data)) as archive:
                 entries = archive.infolist()
-                names = [entry.filename for entry in entries]
-                if (len(entries) > 3000 or len(set(names)) != len(names)
-                        or sum(entry.file_size for entry in entries) > 96 * 1024 * 1024
-                        or any(entry.flag_bits & 1 or PurePosixPath(entry.filename).is_absolute()
-                               or ".." in PurePosixPath(entry.filename).parts
-                               or "\\" in entry.filename for entry in entries)):
-                    raise InvalidDocument("文档包过大、已加密或包含非法部件。")
+                if len(entries) > 3000:
+                    raise InvalidDocument("文档包内部件数量超过 3000 个。")
+                if sum(entry.file_size for entry in entries) > 96 * 1024 * 1024:
+                    raise InvalidDocument("文档包解压后超过 96 MB。")
+                if any(entry.flag_bits & 1 for entry in entries):
+                    raise InvalidDocument("文档包内有加密部件，请解除加密后重试。")
+                names = {package_part_name(entry) for entry in entries}
+                if len(names) != len(entries):
+                    raise InvalidDocument("文档包内有重名部件，请另存为标准 .docx 后重试。")
                 content_types = parse(archive.read("[Content_Types].xml"))
                 if not any(item.get("PartName") == "/" + MAIN and item.get("ContentType") ==
                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
@@ -129,9 +142,10 @@ class Document:
         output = BytesIO()
         with ZipFile(BytesIO(self.data)) as source, ZipFile(output, "w", ZIP_DEFLATED) as target:
             for entry in source.infolist():
+                name = package_part_name(entry)
                 content = (xml.tostring(self.root, encoding="UTF-8", xml_declaration=True)
-                           if entry.filename == MAIN else source.read(entry))
-                target.writestr(entry.filename, content)
+                           if name == MAIN else source.read(entry))
+                target.writestr(name, content)
         if output.tell() > 16 * 1024 * 1024:
             raise InvalidDocument("生成的文档超过 16 MB。")
         return output.getvalue()
@@ -343,8 +357,16 @@ def content_projection(root):
     return xml.tostring(copy, method="c14n")
 
 
+def load_document(data, role):
+    try:
+        return Document(data)
+    except InvalidDocument as error:
+        raise InvalidDocument(f"{role}：{error}") from error
+
+
 def format_document(reference_data, target_data, advisor):
-    reference, target = Document(reference_data), Document(target_data)
+    reference = load_document(reference_data, "参照文档")
+    target = load_document(target_data, "目标文档")
     reference_roles = paragraph_roles(reference, advisor)
     target_roles = paragraph_roles(target, advisor)
     candidates = defaultdict(list)

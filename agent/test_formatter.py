@@ -1,7 +1,7 @@
 from io import BytesIO
 from unittest import TestCase
 from unittest.mock import patch
-from zipfile import ZipFile
+from zipfile import ZipFile, ZipInfo
 
 from advisor import Advisor
 from formatter import Document, InvalidDocument, W, content_projection, format_document, prop, val
@@ -45,7 +45,7 @@ TARGET_BODY = """
 """
 
 
-def package(body, styles=""):
+def package(body, styles="", extra_parts=()):
     data = BytesIO()
     with ZipFile(data, "w") as archive:
         archive.writestr("[Content_Types].xml", TYPES)
@@ -61,6 +61,10 @@ def package(body, styles=""):
                          f'<Relationship Id="rStyles" Type="{REL_TYPE}/styles" Target="styles.xml"/>'
                          f'<Relationship Id="rLink" Type="{REL_TYPE}/hyperlink" Target="https://example.com"'
                          ' TargetMode="External"/></Relationships>')
+        for name, content in extra_parts:
+            part = ZipInfo(name)
+            part.filename = name  # Keep the original separators even when running on Windows.
+            archive.writestr(part, content)
     return data.getvalue()
 
 
@@ -90,6 +94,24 @@ class FormatTest(TestCase):
     def test_rejects_non_word_zip(self):
         with self.assertRaises(InvalidDocument):
             Document(b"this is not a word document")
+
+    def test_accepts_legacy_empty_directories_and_normalizes_output(self):
+        directories = [("word\\theme/", b""), ("word\\_rels/", b"")]
+        reference = package(REFERENCE_BODY, REFERENCE_STYLES, directories)
+        original = package(TARGET_BODY, extra_parts=directories)
+        output, report = format_document(reference, original, Advisor(False))
+        self.assertEqual(report["paragraphs"], 3)
+        with ZipFile(BytesIO(output)) as result:
+            self.assertIn("word/theme/", result.namelist())
+            self.assertIn("word/_rels/", result.namelist())
+            self.assertFalse(any("\\" in name for name in result.namelist()))
+
+    def test_rejects_unsafe_paths_and_identifies_the_target_document(self):
+        reference = package(REFERENCE_BODY, REFERENCE_STYLES)
+        for part in [("word\\..\\outside/", b""), ("C:\\outside/", b""),
+                     ("word\\media\\picture.png", b"data")]:
+            with self.subTest(part=part), self.assertRaisesRegex(InvalidDocument, "目标文档.*路径"):
+                format_document(reference, package(TARGET_BODY, extra_parts=[part]), Advisor(False))
 
 
 class AdvisorTest(TestCase):
