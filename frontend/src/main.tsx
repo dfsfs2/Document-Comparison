@@ -1,17 +1,9 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { modeNames, ReportPage, reportLink, type Job, type JobReport } from './report'
 import './styles.css'
 
 type Session = { username: string | null; csrfHeader: string; csrfToken: string }
-type Job = {
-  id: string; referenceName: string; targetName: string; paragraphs: number; tables: number
-  mode: string; rules: string[]; createdAt: string
-}
-
-const modeNames: Record<string, string> = {
-  local: '本地规则', bailian: '百炼辅助', mixed: '百炼与本地规则',
-  unconfigured: '本地规则 · 百炼未配置', fallback: '本地规则 · 百炼调用失败',
-}
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch('/api' + path, { ...options, cache: 'no-store' })
@@ -30,6 +22,14 @@ function mutate<T>(path: string, session: Session, body?: BodyInit, contentType?
   const headers = new Headers({ [session.csrfHeader]: session.csrfToken })
   if (contentType) headers.set('Content-Type', contentType)
   return api<T>(path, { method: 'POST', headers, body })
+}
+
+function readReportId() {
+  return /^#report\/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i.exec(window.location.hash)?.[1]
+}
+
+function loadReport(id: string) {
+  return api<JobReport>(`/jobs/${id}/report`)
 }
 
 function Icon({ type }: { type: 'logo' | 'doc' | 'arrow' | 'download' | 'history' | 'spark' }) {
@@ -55,7 +55,7 @@ function App() {
   const [reference, setReference] = useState<File | null>(null)
   const [target, setTarget] = useState<File | null>(null)
   const [cloud, setCloud] = useState(false)
-  const [latest, setLatest] = useState<Job | null>(null)
+  const [reportId, setReportId] = useState(readReportId)
 
   async function loadSession() {
     setSession(await api<Session>('/session'))
@@ -63,6 +63,15 @@ function App() {
 
   useEffect(() => {
     loadSession().catch(() => setError('无法连接应用服务，请确认后端已启动。'))
+  }, [])
+
+  useEffect(() => {
+    const readHash = () => {
+      setReportId(readReportId())
+      window.scrollTo(0, 0)
+    }
+    window.addEventListener('hashchange', readHash)
+    return () => window.removeEventListener('hashchange', readHash)
   }, [])
 
   const username = session?.username
@@ -103,7 +112,6 @@ function App() {
     try {
       await mutate<void>('/auth/logout', session)
       setJobs([])
-      setLatest(null)
       setReference(null)
       setTarget(null)
       setCloud(false)
@@ -127,15 +135,14 @@ function App() {
       }
     }
     setBusy(true)
-    setLatest(null)
     const data = new FormData()
     data.append('reference', reference)
     data.append('target', target)
     data.append('useCloud', String(cloud))
     try {
       const job = await mutate<Job>('/jobs', session, data)
-      setLatest(job)
       setJobs(previous => [job, ...previous].slice(0, 50))
+      window.location.hash = reportLink(job.id)
     } catch (error) {
       setError((error as Error).message)
     } finally {
@@ -149,11 +156,11 @@ function App() {
       {username && <div className="account"><span>{username}</span><button className="quiet" onClick={signOut} disabled={busy}>退出登录</button></div>}
     </div></header>
     <main>
-      <section className="hero">
+      {(!username || !reportId) && <section className="hero">
         <div className="eyebrow"><span /> 模板套版工作台</div>
         <h1>用一份文档，为另一份排版。</h1>
         <p>从参照文档提取样式，应用到目标文档。<br className="mobile-break" />保留目标原文、表格数据与图片。</p>
-      </section>
+      </section>}
       {!username ? <section className="panel login">
         <div className="section-heading"><span className="step">01</span><h2>{register ? '创建账号' : '登录工作台'}</h2></div>
         <form onSubmit={authenticate}>
@@ -166,7 +173,7 @@ function App() {
         <button className="text-button" onClick={() => { setRegister(!register); setError('') }} disabled={busy}>
           {register ? '已有账号？返回登录' : '没有账号？创建账号'}
         </button>
-      </section> : <>
+      </section> : reportId ? <ReportPage key={reportId} id={reportId} load={loadReport} /> : <>
         <section className="panel">
           <div className="section-heading"><span className="step">01</span><h2>选择文档</h2><span className="badge">DOCX</span></div>
           <form onSubmit={submit}>
@@ -185,10 +192,6 @@ function App() {
               {busy ? '正在套用格式…' : '开始套版'}<Icon type="arrow" /></button></div>
           </form>
         </section>
-        {latest && <section className="result" aria-live="polite">
-          <div><strong>套版完成</strong><p>{latest.paragraphs} 个段落 · {latest.tables} 个表格 · {modeNames[latest.mode] || latest.mode}</p></div>
-          <a className="primary" href={`/api/jobs/${latest.id}/download`}><Icon type="download" />下载文档</a>
-        </section>}
         <section className="panel history">
           <div className="section-heading"><span className="step">02</span><h2>套版记录</h2><span className="history-icon"><Icon type="history" /></span></div>
           {jobsError && <p className="error" role="alert">{jobsError}</p>}
@@ -199,6 +202,7 @@ function App() {
                 <small title={job.referenceName}>参照 {job.referenceName} · {modeNames[job.mode] || job.mode}</small>
               </div>
               <time dateTime={job.createdAt}>{new Date(job.createdAt).toLocaleString('zh-CN', { hour12: false })}</time>
+              {job.hasReport && <a className="quiet" href={reportLink(job.id)}>查看报告</a>}
               <a className="quiet" href={`/api/jobs/${job.id}/download`} aria-label={`下载 ${job.targetName}`}><Icon type="download" /></a>
             </li>)}</ul>}
         </section>

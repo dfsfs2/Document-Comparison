@@ -18,6 +18,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.csrf.CsrfToken;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -28,22 +29,31 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 @RestController
 @RequestMapping("/api")
 class WorkspaceController {
     private static final MediaType DOCX = MediaType.parseMediaType(
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-    private static final String JOB_FIELDS =
-            "id, reference_name, target_name, paragraph_count, table_count, mode, rules, created_at";
+    private static final String JOB_FIELDS = """
+            j.id, j.reference_name, j.target_name, j.paragraph_count, j.table_count, j.mode, j.rules, j.created_at,
+            EXISTS (SELECT 1 FROM document_job_report r WHERE r.job_id = j.id) AS has_report
+            """;
     private final JdbcClient jdbc;
     private final PasswordEncoder passwords;
     private final DocumentAgent agent;
+    private final TransactionTemplate transactions;
+    private final ObjectMapper json;
 
-    WorkspaceController(JdbcClient jdbc, PasswordEncoder passwords, DocumentAgent agent) {
+    WorkspaceController(JdbcClient jdbc, PasswordEncoder passwords, DocumentAgent agent,
+                        TransactionTemplate transactions, ObjectMapper json) {
         this.jdbc = jdbc;
         this.passwords = passwords;
         this.agent = agent;
+        this.transactions = transactions;
+        this.json = json;
     }
 
     @GetMapping("/session")
@@ -72,8 +82,8 @@ class WorkspaceController {
 
     @GetMapping("/jobs")
     List<Job> jobs(Principal user) {
-        return jdbc.sql("SELECT " + JOB_FIELDS + " FROM document_job WHERE owner_id = :owner "
-                        + "ORDER BY created_at DESC LIMIT 50")
+        return jdbc.sql("SELECT " + JOB_FIELDS + " FROM document_job j WHERE j.owner_id = :owner "
+                        + "ORDER BY j.created_at DESC LIMIT 50")
                 .param("owner", ownerId(user)).query(WorkspaceController::job).list();
     }
 
@@ -86,15 +96,29 @@ class WorkspaceController {
         long owner = ownerId(user);
         var result = agent.format(reference.getBytes(), target.getBytes(), useCloud);
         String id = UUID.randomUUID().toString();
-        jdbc.sql("""
-                INSERT INTO document_job (id, owner_id, reference_name, target_name,
-                    paragraph_count, table_count, mode, rules, output)
-                VALUES (:id, :owner, :reference, :target, :paragraphs, :tables, :mode, :rules, :output)
-                """).param("id", id).param("owner", owner).param("reference", referenceName).param("target", targetName)
-                .param("paragraphs", result.paragraphs()).param("tables", result.tables()).param("mode", result.mode())
-                .param("rules", String.join(",", result.rules())).param("output", result.output()).update();
-        return jdbc.sql("SELECT " + JOB_FIELDS + " FROM document_job WHERE id = :id AND owner_id = :owner")
-                .param("id", id).param("owner", owner).query(WorkspaceController::job).single();
+        return transactions.execute(status -> {
+            jdbc.sql("""
+                    INSERT INTO document_job (id, owner_id, reference_name, target_name,
+                        paragraph_count, table_count, mode, rules, output)
+                    VALUES (:id, :owner, :reference, :target, :paragraphs, :tables, :mode, :rules, :output)
+                    """).param("id", id).param("owner", owner).param("reference", referenceName).param("target", targetName)
+                    .param("paragraphs", result.paragraphs()).param("tables", result.tables()).param("mode", result.mode())
+                    .param("rules", String.join(",", result.rules())).param("output", result.output()).update();
+            jdbc.sql("INSERT INTO document_job_report (job_id, details) VALUES (:id, :details)")
+                    .param("id", id).param("details", result.report().toString()).update();
+            return jdbc.sql("SELECT " + JOB_FIELDS + " FROM document_job j WHERE j.id = :id AND j.owner_id = :owner")
+                    .param("id", id).param("owner", owner).query(WorkspaceController::job).single();
+        });
+    }
+
+    @GetMapping("/jobs/{id}/report")
+    JobReport report(Principal user, @PathVariable UUID id) {
+        return jdbc.sql("SELECT " + JOB_FIELDS + ", report.details "
+                        + "FROM document_job j JOIN document_job_report report ON report.job_id = j.id "
+                        + "WHERE j.id = :id AND j.owner_id = :owner")
+                .param("id", id.toString()).param("owner", ownerId(user))
+                .query((row, index) -> new JobReport(job(row, index), json.readTree(row.getString("details"))))
+                .optional().orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "找不到此套版报告。"));
     }
 
     @GetMapping("/jobs/{id}/download")
@@ -134,11 +158,13 @@ class WorkspaceController {
         String rules = row.getString("rules");
         return new Job(row.getString("id"), row.getString("reference_name"), row.getString("target_name"),
                 row.getInt("paragraph_count"), row.getInt("table_count"), row.getString("mode"),
-                rules.isEmpty() ? List.of() : List.of(rules.split(",")), row.getTimestamp("created_at").toInstant());
+                rules.isEmpty() ? List.of() : List.of(rules.split(",")), row.getTimestamp("created_at").toInstant(),
+                row.getBoolean("has_report"));
     }
 
     record Session(String username, String csrfHeader, String csrfToken) {}
     record Credentials(String username, String password) {}
     record Job(String id, String referenceName, String targetName, int paragraphs, int tables,
-               String mode, List<String> rules, Instant createdAt) {}
+               String mode, List<String> rules, Instant createdAt, boolean hasReport) {}
+    record JobReport(Job job, JsonNode report) {}
 }

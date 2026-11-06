@@ -57,7 +57,7 @@ h2 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
 .primary svg, .quiet svg { width: 17px; height: 17px; }
 .quiet { border: 1px solid var(--border); background: #fff; color: var(--green); padding: 7px 10px; }
 .quiet:hover { background: #f0f3eb; }
-.history, .result { margin-top: 16px; }
+.history { margin-top: 16px; }
 .history-icon { color: var(--muted); margin-left: auto; display: grid; }
 .empty { margin: 0; padding: 19px 0 10px; border-top: 1px solid var(--border); }
 .jobs { list-style: none; margin: 0; padding: 0; }
@@ -66,8 +66,30 @@ h2 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
 .job-title strong, .job-title small { display: block; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
 .job-title strong { font-size: 13px; }
 .job-title small, time { font-size: 12px; color: var(--muted); }
-.result { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 15px 19px; border-radius: 12px; background: #e9f0e4; color: var(--green); }
-.result p { font-size: 12px; margin: 5px 0 0; }
+.report-loading, .report-hero { margin-top: 30px; }
+.report-hero { margin-bottom: 22px; }
+.report-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-top: 22px; }
+.report-heading > div { min-width: 0; }
+.report-file { margin: 5px 0; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.report-file strong { margin-right: 4px; color: var(--green); }
+.report-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin-bottom: 16px; }
+.report-stats > div { display: grid; gap: 4px; padding: 12px; background: #f2f6ee; border-radius: 9px; }
+.report-stats strong { color: var(--green); font-size: 25px; }
+.report-stats span, .report-note { color: var(--muted); font-size: 13px; }
+.report-filters, .report-pagination { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.report-filters [aria-pressed="true"] { background: var(--green); color: white; border-color: var(--green); }
+.report-changes { padding: 0; margin: 15px 0 0; list-style: none; }
+.report-changes > li { padding: 17px 0; border-top: 1px solid var(--border); }
+.report-changes h3 { margin: 0 0 8px; font-size: 16px; }
+.report-changes blockquote { margin: 0 0 8px; padding-left: 9px; border-left: 3px solid #bdc6b2; color: var(--muted); overflow-wrap: anywhere; }
+.report-reason { margin: 8px 0 11px; font-size: 13px; line-height: 1.6; }
+.report-reason strong { margin-right: 6px; color: var(--green); }
+.report-diff { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 2fr); gap: 10px; align-items: start; padding: 9px; font-size: 13px; overflow-wrap: anywhere; }
+.report-diff:nth-child(odd) { background: #f7f8f5; border-radius: 6px; }
+.report-diff small { display: block; margin-bottom: 3px; font-size: 11px; color: var(--muted); }
+.report-diff strong small { font-weight: normal; }
+.report-pagination { justify-content: center; color: var(--muted); font-size: 13px; }
+.report-pagination button:disabled { opacity: .5; }
 .login { max-width: 450px; }
 .login form { display: grid; gap: 14px; }
 .login label { display: grid; gap: 7px; font-size: 13px; font-weight: 600; }
@@ -89,5 +111,9 @@ footer span { margin: 0 5px; }
   .uploads { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .upload { min-height: 0; padding: 13px; }
   .upload-arrow { display: none; }
+  .report-heading { flex-direction: column; align-items: flex-start; }
+  .report-diff { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .report-diff > strong { grid-column: 1 / -1; }
+  .jobs li { gap: 6px; }
   time { display: none; }
 }

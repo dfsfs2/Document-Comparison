@@ -89,7 +89,24 @@ class FormatTest(TestCase):
             for name in source.namelist():
                 if name != "word/document.xml":
                     self.assertEqual(source.read(name), result.read(name), name)
-        self.assertEqual(report, {"paragraphs": 3, "tables": 1, "mode": "local", "rules": []})
+        self.assertEqual({key: report[key] for key in ("paragraphs", "tables", "mode", "rules")},
+                         {"paragraphs": 3, "tables": 1, "mode": "local", "rules": []})
+        detail = report["report"]
+        self.assertEqual(detail["counts"], {"paragraph": 3, "table": 1, "section": 1})
+        heading = detail["locations"][0]
+        self.assertEqual((heading["kind"], heading["index"], heading["excerpt"]), ("paragraph", 1, "保留这个标题"))
+        self.assertIn("参照文档第 1 个段落", heading["reason"])
+        self.assertIn({"property": "对齐方式", "before": "左对齐", "after": "居中"}, heading["changes"])
+        self.assertIn({"property": "字号", "before": "11 pt", "after": "18 pt", "affectedRuns": 1},
+                      heading["changes"])
+        self.assertEqual([entry["kind"] for entry in detail["locations"][-2:]], ["table", "section"])
+
+    def test_report_omits_matching_formatting(self):
+        original = package(REFERENCE_BODY, REFERENCE_STYLES)
+        _, result = format_document(original, original, Advisor(False))
+        self.assertEqual(result["report"], {
+            "counts": {"paragraph": 0, "table": 0, "section": 0}, "locations": [],
+        })
 
     def test_rejects_non_word_zip(self):
         with self.assertRaises(InvalidDocument):

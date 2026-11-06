@@ -13,6 +13,7 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.server.ResponseStatusException;
+import tools.jackson.databind.JsonNode;
 
 @Component
 class DocumentAgent {
@@ -37,7 +38,8 @@ class DocumentAgent {
                     .contentType(MediaType.MULTIPART_FORM_DATA).body(parts)
                     .retrieve().body(Result.class);
             if (result == null || result.output() == null || result.output().length == 0
-                    || result.mode() == null || result.rules() == null) {
+                    || result.mode() == null || result.rules() == null
+                    || result.report() == null || !result.report().isObject()) {
                 throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "文档处理服务返回了无效结果。");
             }
             return result;
@@ -63,5 +65,5 @@ class DocumentAgent {
     }
 
     record AgentError(String detail) {}
-    record Result(byte[] output, int paragraphs, int tables, String mode, List<String> rules) {}
+    record Result(byte[] output, int paragraphs, int tables, String mode, List<String> rules, JsonNode report) {}
 }

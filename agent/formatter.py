@@ -7,6 +7,8 @@ from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
 
 from lxml import etree as xml
 
+from format_report import FormatReport, ROLES, RunChanges, property_changes
+
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 MAIN = "word/document.xml"
@@ -236,9 +238,7 @@ def materialize_theme(properties, theme):
     return properties
 
 
-def style_for(document, paragraph):
-    pp = prop(paragraph, "pPr")
-    styles = document.chain(val(pp, "pStyle") or document.default_p)
+def paragraph_properties(document, pp, styles):
     style_p = [prop(style, "pPr") for style in styles]
     paragraph_props = merge([prop(prop(document.defaults, "pPrDefault"), "pPr"),
                              *style_p, pp], P)
@@ -247,8 +247,10 @@ def style_for(document, paragraph):
     if "ind" not in paragraph_props:
         paragraph_props["ind"] = node("ind", left="0", right="0", firstLine="0")
     paragraph_props.setdefault("spacing", node("spacing", before="0", after="0", line="240", lineRule="auto"))
-    # The dominant run represents the template's baseline rather than its short inline emphasis.
-    run = max(runs_of(paragraph), key=lambda r: len(text_of(r)), default=None)
+    return materialize_theme(paragraph_props, document.theme)
+
+
+def run_properties(document, run, styles):
     direct = prop(run, "rPr")
     character = document.chain(val(direct, "rStyle"))
     run_defaults = prop(prop(document.defaults, "rPrDefault"), "rPr")
@@ -260,7 +262,22 @@ def style_for(document, paragraph):
                          ("color", "auto"), ("sz", "22"), ("spacing", "0"), ("kern", "0")):
         merged_run.setdefault(key, node(key, val=default))
     merged_run.setdefault("szCs", node("szCs", val=merged_run["sz"].get(W + "val")))
-    return materialize_theme(paragraph_props, document.theme), materialize_theme(merged_run, document.theme)
+    return materialize_theme(merged_run, document.theme)
+
+
+def style_for(document, paragraph):
+    pp = prop(paragraph, "pPr")
+    styles = document.chain(val(pp, "pStyle") or document.default_p)
+    # The dominant run represents the template's baseline rather than its short inline emphasis.
+    run = max(runs_of(paragraph), key=lambda r: len(text_of(r)), default=None)
+    return paragraph_properties(document, pp, styles), run_properties(document, run, styles)
+
+
+def table_properties(document, table):
+    direct = prop(table, "tblPr")
+    styles = document.chain(val(direct, "tblStyle"))
+    properties = merge([*(prop(style, "tblPr") for style in styles), direct], TABLE)
+    return materialize_theme(properties, document.theme)
 
 
 def group_for(name, properties):
@@ -305,9 +322,10 @@ def paragraph_roles(document, advisor):
                 roles[i] = "title"
             elif len(snippets) < 32:
                 snippets[i] = sample
-    for index, role in advisor.classify(snippets).items():
+    cloud_roles = advisor.classify(snippets)
+    for index, role in cloud_roles.items():
         roles[index] = role
-    return roles
+    return roles, cloud_roles
 
 
 def replace_properties(parent, name, properties, keys):
@@ -367,59 +385,74 @@ def load_document(data, role):
 def format_document(reference_data, target_data, advisor):
     reference = load_document(reference_data, "参照文档")
     target = load_document(target_data, "目标文档")
-    reference_roles = paragraph_roles(reference, advisor)
-    target_roles = paragraph_roles(target, advisor)
+    reference_roles, _ = paragraph_roles(reference, advisor)
+    target_roles, cloud_roles = paragraph_roles(target, advisor)
     candidates = defaultdict(list)
-    for paragraph, role in zip(reference.paragraphs, reference_roles):
+    for index, (paragraph, role) in enumerate(zip(reference.paragraphs, reference_roles), 1):
         if text_of(paragraph).strip():
-            candidates[role].append(paragraph)
+            candidates[role].append((index, paragraph))
     if not candidates:
         raise InvalidDocument("参照文档需要至少一个包含文字的段落。")
     samples = {}
     for role, paragraphs in candidates.items():
         # Repeated formats take precedence over a one-off direct override.
-        styles = [style_for(reference, p) for p in paragraphs[:80]]
+        styles = [style_for(reference, p) for _, p in paragraphs[:80]]
         signatures = [tuple((key, xml.tostring(value)) for part in style
                             for key, value in sorted(part.items())) for style in styles]
         most_common = Counter(signatures).most_common(1)[0][0]
-        samples[role] = styles[signatures.index(most_common)]
+        selected = signatures.index(most_common)
+        samples[role] = paragraphs[selected][0], styles[selected]
 
     before = content_projection(target.root)
+    report = FormatReport()
     changed_paragraphs = 0
-    for paragraph, role in zip(target.paragraphs, target_roles):
+    for index, (paragraph, role) in enumerate(zip(target.paragraphs, target_roles), 1):
         runs = runs_of(paragraph)
         if not runs:
             continue
-        sample = samples.get(role)
-        if sample is None and role == "table-header":
-            sample = samples.get("table")
-        if sample is None and role == "list":
-            sample = samples.get("body")
-        if sample is None:
+        sample_role = role if role in samples else {"table-header": "table", "list": "body"}.get(role)
+        if sample_role not in samples:
             continue
-        paragraph_props, run_props = sample
+        source_index, (paragraph_props, run_props) = samples[sample_role]
+        direct = prop(paragraph, "pPr")
+        styles = target.chain(val(direct, "pStyle") or target.default_p)
+        old_paragraph = paragraph_properties(target, direct, styles)
         keys = tuple(key for key in P if key != "ind" or role != "list")
         replace_properties(paragraph, "pPr", {k: v for k, v in paragraph_props.items() if k in keys}, keys)
         mixed = {key for key in ("b", "bCs", "i", "iCs")
                  if 0 < sum(prop(prop(run, "rPr"), key) is not None for run in runs) < len(runs)}
+        run_changes = RunChanges()
         for run in runs:
-            direct = prop(run, "rPr")
+            old_run = run_properties(target, run, styles)
             keep = mixed.copy()
             if next(run.iterancestors(W + "hyperlink"), None) is not None:
                 keep.add("color")
             replace_properties(run, "rPr", {k: v for k, v in run_props.items() if k not in keep},
                                tuple(key for key in R if key not in keep))
+            run_changes.add(old_run, run_properties(target, run, styles))
+        changes = property_changes(old_paragraph, paragraph_properties(target, prop(paragraph, "pPr"), styles), "p:")
+        changes.extend(run_changes.summarize())
+        method = "百炼辅助识别" if index - 1 in cloud_roles else "本地识别"
+        reason = f"{method}为{ROLES[role]}，匹配参照文档第 {source_index} 个段落的{ROLES[sample_role]}样式。"
+        if role != sample_role:
+            reason = (f"{method}为{ROLES[role]}，参照文档缺少对应样式，"
+                      f"沿用参照文档第 {source_index} 个段落的{ROLES[sample_role]}样式。")
+        report.add("paragraph", index, reason, changes, text_of(paragraph))
         changed_paragraphs += 1
 
     ref_tables = list(reference.body.iter(W + "tbl"))
     changed_tables = 0
     if ref_tables:
         for index, table in enumerate(target.body.iter(W + "tbl")):
-            sample = prop(ref_tables[min(index, len(ref_tables) - 1)], "tblPr")
-            table_style = reference.chain(val(sample, "tblStyle"))
-            props = merge([*(prop(s, "tblPr") for s in table_style), sample], TABLE)
+            source_index = min(index, len(ref_tables) - 1)
+            props = table_properties(reference, ref_tables[source_index])
             if props:
-                replace_properties(table, "tblPr", materialize_theme(props, reference.theme), tuple(props))
+                old_table = table_properties(target, table)
+                replace_properties(table, "tblPr", props, tuple(props))
+                reason = f"按表格顺序套用参照文档第 {source_index + 1} 个表格的样式。"
+                if source_index < index:
+                    reason = f"参照文档没有同序表格，沿用它的最后一个表格（第 {source_index + 1} 个）的样式。"
+                report.add("table", index + 1, reason, property_changes(old_table, table_properties(target, table)))
                 changed_tables += 1
 
     def sections(document):
@@ -428,12 +461,18 @@ def format_document(reference_data, target_data, advisor):
     reference_sections = sections(reference)
     if reference_sections:
         for index, section in enumerate(sections(target)):
-            props = merge([reference_sections[min(index, len(reference_sections) - 1)]], PAGE)
+            source_index = min(index, len(reference_sections) - 1)
+            old_section = merge([section], PAGE)
+            props = merge([reference_sections[source_index]], PAGE)
             replace_group(section, "sectPr", props, tuple(props))
+            reason = f"按节的顺序套用参照文档第 {source_index + 1} 节的页面设置。"
+            if source_index < index:
+                reason = f"参照文档没有同序的节，沿用它的最后一节（第 {source_index + 1} 节）的页面设置。"
+            report.add("section", index + 1, reason, property_changes(old_section, merge([section], PAGE)))
 
     if before != content_projection(target.root):
         raise RuntimeError("Non-formatting content changed")
     return target.serialize(), {
         "paragraphs": changed_paragraphs, "tables": changed_tables,
-        "mode": advisor.mode, "rules": sorted(advisor.rules),
+        "mode": advisor.mode, "rules": sorted(advisor.rules), "report": report.result(),
     }

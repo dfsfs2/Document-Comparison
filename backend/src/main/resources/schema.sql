@@ -18,3 +18,9 @@ CREATE TABLE IF NOT EXISTS document_job (
     FOREIGN KEY (owner_id) REFERENCES app_user (id),
     INDEX job_owner_date (owner_id, created_at)
 ) DEFAULT CHARACTER SET utf8mb4;
+
+CREATE TABLE IF NOT EXISTS document_job_report (
+    job_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+    details JSON NOT NULL,
+    FOREIGN KEY (job_id) REFERENCES document_job (id) ON DELETE CASCADE
+);
