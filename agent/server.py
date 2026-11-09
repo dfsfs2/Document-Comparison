@@ -14,6 +14,7 @@ from knowledge_import import extract_text
 
 app = FastAPI(title="Document Comparison Agent", docs_url=None, redoc_url=None, openapi_url=None)
 LOG = logging.getLogger(__name__)
+DEFAULT_CHAT_MODELS = "qwen-flash,qwen-max,deepseek-v4.1-flash,kimi-k2.6,glm-5.2,MiniMax-M2.5"
 
 
 class KnowledgeRule(BaseModel):
@@ -56,7 +57,7 @@ def health():
 
 
 def available_chat_models(default):
-    extras = os.getenv("DASHSCOPE_CHAT_MODELS", "qwen-flash,qwen-max").split(",")
+    extras = os.getenv("DASHSCOPE_CHAT_MODELS", DEFAULT_CHAT_MODELS).split(",")
     return list(dict.fromkeys([default, *(name.strip() for name in extras if name.strip())]))
 
 
@@ -85,10 +86,11 @@ def chat(request: ChatRequest):
         messages.append({"role": "user", "content": turn.question})
         messages.append({"role": "assistant", "content": turn.answer[:2000]})
     messages.append({"role": "user", "content": request.message})
+    payload = {"model": model, "max_tokens": 1536, "messages": messages}
+    if not model.casefold().startswith("minimax"):
+        payload["enable_thinking"] = False
     try:
-        result = client.post("/chat/completions", {
-            "model": model, "enable_thinking": False, "max_tokens": 1536, "messages": messages,
-        }, timeout=75)
+        result = client.post("/chat/completions", payload, timeout=75)
         answer = result["choices"][0]["message"]["content"]
         if not isinstance(answer, str) or not answer.strip():
             raise ValueError("Empty chat completion")

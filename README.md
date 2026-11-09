@@ -32,7 +32,7 @@ docker compose up -d --build
 
 登录后从顶部导航打开 **AI 聊天**，在聊天标题右侧选择模型。新消息使用所选模型，继续使用当前账号的上下文。每次完成的问答按账号保存到 MySQL 的 `chat_turn`，历史记录可分批查看。新回复也会显示所用的模型。
 
-`DASHSCOPE_CHAT_MODEL` 设置默认模型，`DASHSCOPE_CHAT_MODELS` 用逗号分隔可额外选择的模型，默认额外提供 `qwen-flash` 和 `qwen-max`。设置为空可只保留默认模型。所有选项通过同一百炼接口和凭据调用，模型需要在当前地域和账号下可用。修改后运行 `docker compose up -d`。
+`DASHSCOPE_CHAT_MODEL` 设置默认模型，`DASHSCOPE_CHAT_MODELS` 用逗号分隔可额外选择的模型。默认可选项包括 `qwen-flash`、`qwen-max`、`deepseek-v4.1-flash`、`kimi-k2.6`、`glm-5.2` 和 `MiniMax-M2.5`。设置为空可只保留默认模型。所有选项通过同一百炼接口和凭据调用，模型需要在当前地域和账号下可用。修改后运行 `docker compose up -d`。
 
 Redis 按账号缓存最近 8 轮对话，缓存时间为 30 分钟。缓存过期后从 MySQL 恢复近期上下文。回答新问题时，服务还会从同一账号的较早对话中检索最多 3 条相关摘录。当前消息和选出的上下文会发送给百炼。
 

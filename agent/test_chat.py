@@ -47,11 +47,27 @@ class ChatPromptTest(TestCase):
         self.assertEqual(chat(ChatRequest(message="你好", recent=[], recalled=[], model="qwen-flash")),
                          {"answer": "回复", "model": "qwen-flash"})
         self.assertEqual(client.post.call_args.args[1]["model"], "qwen-flash")
+        self.assertIs(client.post.call_args.args[1]["enable_thinking"], False)
         client.post.reset_mock()
         with self.assertRaises(HTTPException) as error:
             chat(ChatRequest(message="你好", recent=[], recalled=[], model="unlisted"))
         self.assertEqual(error.exception.status_code, 400)
         client.post.assert_not_called()
+
+    @patch.dict("os.environ", {}, clear=True)
+    @patch("server.Bailian")
+    def test_default_catalogue_includes_other_families_and_minimax_omits_thinking_flag(self, bailian):
+        client = bailian.return_value
+        client.key = "fixture"
+        client.chat_model = "qwen-plus"
+        client.post.return_value = {"choices": [{"message": {"content": "回复"}}]}
+        self.assertEqual(chat_models()["models"], [
+            "qwen-plus", "qwen-flash", "qwen-max", "deepseek-v4.1-flash",
+            "kimi-k2.6", "glm-5.2", "MiniMax-M2.5",
+        ])
+        result = chat(ChatRequest(message="你好", recent=[], recalled=[], model="MiniMax-M2.5"))
+        self.assertEqual(result["model"], "MiniMax-M2.5")
+        self.assertNotIn("enable_thinking", client.post.call_args.args[1])
 
     @patch.dict("os.environ", {"DASHSCOPE_CHAT_MODEL": "qwen-plus",
                              "DASHSCOPE_CHAT_MODELS": " qwen-max, qwen-plus, qwen-max, "})
