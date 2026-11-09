@@ -122,6 +122,21 @@ h2 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
 .rag-matches { margin-top: 12px; font-size: 13px; }
 .rag-matches ol { padding-left: 20px; }
 .rag-matches li { margin: 7px 0; overflow-wrap: anywhere; }
+.chat-hero { padding-top: 40px; }
+.chat-transcript { min-height: 240px; max-height: 52vh; overflow-y: auto; padding: 12px; border: 1px solid var(--border); border-radius: 11px; background: #fafbf8; }
+.chat-transcript:focus-visible, .chat-compose textarea:focus-visible { outline: 2px solid #849a77; outline-offset: 1px; }
+.chat-turn { display: grid; gap: 10px; margin: 8px 0 16px; }
+.chat-message { max-width: min(88%, 680px); padding: 9px 12px; border-radius: 10px; font-size: 14px; }
+.chat-message strong { display: block; color: var(--green); font-size: 12px; margin-bottom: 4px; }
+.chat-message p { margin: 0; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-user { justify-self: end; background: #e9f0e4; }
+.chat-model { justify-self: start; border: 1px solid var(--border); background: white; }
+.chat-empty, .chat-pending { margin: 8px 0; color: var(--muted); font-size: 13px; }
+.chat-older { display: flex; margin: 0 auto 10px; }
+.chat-compose { display: grid; gap: 8px; margin-top: 15px; }
+.chat-compose textarea { width: 100%; padding: 10px; resize: vertical; border: 1px solid var(--border); border-radius: 9px; font: inherit; font-size: 14px; }
+.chat-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.chat-actions small { color: var(--muted); font-size: 12px; }
 .login { max-width: 450px; }
 .login form { display: grid; gap: 14px; }
 .login label { display: grid; gap: 7px; font-size: 13px; font-weight: 600; }

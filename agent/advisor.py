@@ -37,10 +37,10 @@ class Bailian:
         self.chat_model = setting("DASHSCOPE_CHAT_MODEL", "qwen-plus")
         self.embedding_model = setting("DASHSCOPE_EMBEDDING_MODEL", "text-embedding-v4")
 
-    def post(self, path, payload):
+    def post(self, path, payload, timeout=12):
         request = Request(self.base + path, data=json.dumps(payload, ensure_ascii=False).encode(),
                           headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json"})
-        with urlopen(request, timeout=12) as response:
+        with urlopen(request, timeout=timeout) as response:
             return json.load(response)
 
     def embed(self, texts):

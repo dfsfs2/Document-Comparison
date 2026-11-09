@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { ChatPage, type ChatHistory, type Turn } from './chat'
 import { RagPage, type Rule, type SearchResult } from './rag'
 import { modeNames, ReportPage, reportLink, type Job, type JobReport } from './report'
 import './styles.css'
@@ -37,6 +38,10 @@ function loadRules() {
   return api<Rule[]>('/knowledge')
 }
 
+function loadChat(before?: number) {
+  return api<ChatHistory>(before === undefined ? '/chat' : `/chat?before=${before}`)
+}
+
 function Icon({ type }: { type: 'logo' | 'doc' | 'arrow' | 'download' | 'history' | 'spark' }) {
   const paths: Record<typeof type, ReactNode> = {
     logo: <><path d="M8 7h10v13H8z"/><path d="M5 16H4V4h10v1M11 11h4m-4 4h4"/></>,
@@ -63,6 +68,7 @@ function App() {
   const [hash, setHash] = useState(() => window.location.hash)
   const reportId = readReportId(hash)
   const showRag = hash === '#rag'
+  const showChat = hash === '#chat'
 
   async function loadSession() {
     setSession(await api<Session>('/session'))
@@ -161,13 +167,14 @@ function App() {
     <header className="top"><div className="top-inner">
       <div className="brand"><span className="brand-mark"><Icon type="logo" /></span>文档对照<span className="top-label">WORD 工作台</span></div>
       {username && <nav className="top-nav" aria-label="工作台导航">
-        <a href="#" aria-current={!showRag ? 'page' : undefined}>文档套版</a>
+        <a href="#" aria-current={!showRag && !showChat ? 'page' : undefined}>文档套版</a>
         <a href="#rag" aria-current={showRag ? 'page' : undefined}>RAG 知识库</a>
+        <a href="#chat" aria-current={showChat ? 'page' : undefined}>AI 聊天</a>
       </nav>}
       {username && <div className="account"><span>{username}</span><button className="quiet" onClick={signOut} disabled={busy}>退出登录</button></div>}
     </div></header>
     <main>
-      {(!username || (!reportId && !showRag)) && <section className="hero">
+      {(!username || (!reportId && !showRag && !showChat)) && <section className="hero">
         <div className="eyebrow"><span /> 模板套版工作台</div>
         <h1>用一份文档，为另一份排版。</h1>
         <p>从参照文档提取样式，应用到目标文档。<br className="mobile-break" />保留目标原文、表格数据与图片。</p>
@@ -184,7 +191,9 @@ function App() {
         <button className="text-button" onClick={() => { setRegister(!register); setError('') }} disabled={busy}>
           {register ? '已有账号？返回登录' : '没有账号？创建账号'}
         </button>
-      </section> : showRag && session ? <RagPage load={loadRules}
+      </section> : showChat && session ? <ChatPage key={username} load={loadChat}
+        send={request => mutate<Turn>('/chat', session, JSON.stringify(request), 'application/json')} />
+        : showRag && session ? <RagPage load={loadRules}
         add={draft => mutate<Rule>('/knowledge', session, JSON.stringify(draft), 'application/json')}
         extract={async file => {
           const data = new FormData()

@@ -1,11 +1,12 @@
 import base64
 import hmac
+import json
 import logging
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
-from advisor import Advisor, default_knowledge, setting
+from advisor import Advisor, Bailian, default_knowledge, setting
 from formatter import InvalidDocument, MAX_FILE, format_document
 from knowledge_import import extract_text
 
@@ -26,6 +27,17 @@ class KnowledgeQuery(BaseModel):
     use_cloud: bool = Field(default=False, alias="useCloud")
 
 
+class ConversationTurn(BaseModel):
+    question: str = Field(max_length=2000)
+    answer: str = Field(max_length=8000)
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    recent: list[ConversationTurn] = Field(max_length=8)
+    recalled: list[ConversationTurn] = Field(max_length=3)
+
+
 KNOWLEDGE = TypeAdapter(list[KnowledgeRule])
 
 
@@ -38,6 +50,35 @@ def authenticate(x_agent_token: str = Header("")):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.post("/chat", dependencies=[Depends(authenticate)])
+def chat(request: ChatRequest):
+    client = Bailian()
+    if not client.key:
+        raise HTTPException(503, "百炼 API Key 尚未配置，请检查 DASHSCOPE_API_KEY。")
+    messages = [{"role": "system", "content": (
+        "你是文档对照工作台的聊天助手。按用户的语言回答。"
+        "较早的对话摘录仅供理解背景，结合当前问题使用，并以用户较新的表述为准。"
+    )}]
+    if request.recalled:
+        history = [{"user": turn.question[:800], "assistant": turn.answer[:1000]} for turn in request.recalled]
+        messages[0]["content"] += "\n较早的相关对话摘录\n" + json.dumps(history, ensure_ascii=False)
+    for turn in request.recent:
+        messages.append({"role": "user", "content": turn.question})
+        messages.append({"role": "assistant", "content": turn.answer[:2000]})
+    messages.append({"role": "user", "content": request.message})
+    try:
+        result = client.post("/chat/completions", {
+            "model": client.chat_model, "enable_thinking": False, "max_tokens": 1536, "messages": messages,
+        }, timeout=75)
+        answer = result["choices"][0]["message"]["content"]
+        if not isinstance(answer, str) or not answer.strip():
+            raise ValueError("Empty chat completion")
+        return {"answer": answer.strip()[:8000]}
+    except (OSError, ValueError, TypeError, KeyError, IndexError) as error:
+        LOG.warning("Bailian chat unavailable: %s", type(error).__name__)
+        raise HTTPException(502, "百炼暂时无法回复，请稍后重试。") from error
 
 
 @app.get("/knowledge/defaults", dependencies=[Depends(authenticate)], response_model=list[KnowledgeRule])

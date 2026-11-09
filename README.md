@@ -28,6 +28,12 @@ docker compose up -d --build
 
 [百炼兼容接口与地域地址](https://docs.modelstudio.console.alibabacloud.com/en/model-studio/base-url) · [百炼文本向量 API](https://docs.modelstudio.console.alibabacloud.com/zh/model-studio/text-embedding-synchronous-api)
 
+## AI 聊天
+
+登录后从顶部导航打开 **AI 聊天**。聊天使用同一个 `DASHSCOPE_CHAT_MODEL` 和百炼凭据。每次完成的问答按账号保存到 MySQL 的 `chat_turn`，历史记录可分批查看。
+
+Redis 按账号缓存最近 8 轮对话，缓存时间为 30 分钟。缓存过期后从 MySQL 恢复近期上下文。回答新问题时，服务还会从同一账号的较早对话中检索最多 3 条相关摘录。当前消息和选出的上下文会发送给百炼。
+
 ## 套版范围
 
 - 按总标题、标题层级、正文、列表和表格段落匹配参照文档中的样式。可迁移字体、字号、颜色、段落对齐、间距、缩进等属性。参照文档缺少对应角色时，保留该角色原格式。列表保留自身编号和缩进。
@@ -41,8 +47,8 @@ docker compose up -d --build
 | React 19.3 / TypeScript 7 / Vite 8 | 登录、选择文件、启动套版、任务记录和下载 |
 | Java 21 / Spring Boot | 密码哈希、会话鉴权、上传入口、任务与下载授权 |
 | Python / FastAPI | DOCX 套版、内容校验、百炼调用、RAG 检索 |
-| MySQL | 账号、RAG 知识库、任务、套版报告和生成的 DOCX |
-| Redis | 登录会话和 CSRF 状态 |
+| MySQL | 账号、RAG 知识库、聊天历史、任务、套版报告和生成的 DOCX |
+| Redis | 登录会话、CSRF 状态和聊天短期记忆 |
 
 前端通过同源 `/api` 访问 Java。Python、MySQL、Redis 只在 Compose 内网监听。默认配置用于本机开发，Compose 入口绑定到回环地址。
 

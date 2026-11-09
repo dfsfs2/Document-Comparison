@@ -30,3 +30,16 @@ CREATE TABLE IF NOT EXISTS user_knowledge (
     rules JSON NOT NULL,
     FOREIGN KEY (owner_id) REFERENCES app_user (id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS chat_turn (
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    owner_id BIGINT NOT NULL,
+    request_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    FOREIGN KEY (owner_id) REFERENCES app_user (id) ON DELETE CASCADE,
+    UNIQUE KEY chat_owner_request (owner_id, request_id),
+    INDEX chat_owner_turn (owner_id, id),
+    FULLTEXT KEY chat_turn_search (question, answer) WITH PARSER ngram
+) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4;

@@ -48,20 +48,32 @@ class WorkspaceController {
     private final TransactionTemplate transactions;
     private final ObjectMapper json;
     private final KnowledgeLibrary knowledge;
+    private final ChatMemory chat;
 
     WorkspaceController(JdbcClient jdbc, PasswordEncoder passwords, DocumentAgent agent,
-                        TransactionTemplate transactions, ObjectMapper json, KnowledgeLibrary knowledge) {
+                        TransactionTemplate transactions, ObjectMapper json, KnowledgeLibrary knowledge, ChatMemory chat) {
         this.jdbc = jdbc;
         this.passwords = passwords;
         this.agent = agent;
         this.transactions = transactions;
         this.json = json;
         this.knowledge = knowledge;
+        this.chat = chat;
     }
 
     @GetMapping("/session")
     Session session(Principal user, CsrfToken token) {
         return new Session(user == null ? null : user.getName(), token.getHeaderName(), token.getToken());
+    }
+
+    @GetMapping("/chat")
+    ChatMemory.Page chatHistory(Principal user, @RequestParam(required = false) Long before) {
+        return chat.history(ownerId(user), before);
+    }
+
+    @PostMapping("/chat")
+    ChatMemory.Turn chat(Principal user, @RequestBody ChatMemory.Send request) {
+        return chat.send(ownerId(user), request);
     }
 
     @PostMapping("/auth/register")

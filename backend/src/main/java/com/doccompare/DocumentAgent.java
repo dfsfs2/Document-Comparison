@@ -77,6 +77,24 @@ class DocumentAgent {
         }
     }
 
+    String chat(ChatMemory.Prompt prompt) {
+        try {
+            ChatAnswer result = client.post().uri("/chat").contentType(MediaType.APPLICATION_JSON)
+                    .body(prompt).retrieve().body(ChatAnswer.class);
+            if (result != null && result.answer() != null && !result.answer().isBlank()) {
+                return result.answer();
+            }
+        } catch (RestClientResponseException error) {
+            if (error.getStatusCode().value() == 503) {
+                throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "百炼 API Key 尚未配置。");
+            }
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "百炼暂时无法回复，请稍后重试。", error);
+        } catch (RestClientException error) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "连接聊天服务失败，请稍后重试。", error);
+        }
+        throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "百炼返回了空回复，请重试。");
+    }
+
     private static ResponseStatusException documentFailure(RestClientResponseException error) {
         if (error.getStatusCode().value() == 422) {
             AgentError body = error.getResponseBodyAs(AgentError.class);
@@ -122,6 +140,7 @@ class DocumentAgent {
     }
 
     record AgentError(String detail) {}
+    private record ChatAnswer(String answer) {}
     record ExtractedText(String text) {}
     record Result(byte[] output, int paragraphs, int tables, String mode, List<String> rules, JsonNode report) {}
 }
