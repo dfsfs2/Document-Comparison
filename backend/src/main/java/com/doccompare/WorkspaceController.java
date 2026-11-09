@@ -1,6 +1,9 @@
 package com.doccompare;
 
+import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.security.Principal;
 import java.sql.ResultSet;
@@ -8,6 +11,7 @@ import java.sql.SQLException;
 import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.ContentDisposition;
@@ -30,6 +34,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -80,6 +85,42 @@ class WorkspaceController {
     @PostMapping("/chat")
     ChatMemory.Turn chat(Principal user, @RequestBody ChatMemory.Send request) {
         return chat.send(ownerId(user), request);
+    }
+
+    @PostMapping(path = "/chat/stream", consumes = MediaType.MULTIPART_FORM_DATA_VALUE, produces = DocumentAgent.NDJSON)
+    ResponseEntity<StreamingResponseBody> streamChat(Principal user, HttpServletResponse response, @RequestParam UUID requestId,
+            @RequestParam(defaultValue = "") String message, @RequestParam String model,
+            @RequestParam(required = false) List<MultipartFile> files) throws IOException {
+        long owner = ownerId(user);
+        List<ChatAttachment> attachments = ChatAttachment.read(files);
+        var request = new ChatMemory.Send(requestId, message, model);
+        StreamingResponseBody body = output -> {
+            try {
+                ChatMemory.Turn turn = chat.send(owner, request, attachments, prompt ->
+                        agent.streamChat(prompt, attachments, delta -> {
+                            try {
+                                writeChatEvent(output, response, delta);
+                            } catch (IOException error) {
+                                throw new UncheckedIOException(error);
+                            }
+                        }));
+                writeChatEvent(output, response, Map.of("type", "done", "turn", turn));
+            } catch (ResponseStatusException error) {
+                String messageText = error.getReason() == null ? "聊天请求失败，请稍后重试。" : error.getReason();
+                writeChatEvent(output, response, Map.of("type", "error", "message", messageText));
+            } catch (UncheckedIOException error) {
+                throw error.getCause();
+            }
+        };
+        return ResponseEntity.ok().header("X-Accel-Buffering", "no").header(HttpHeaders.CACHE_CONTROL, "no-store")
+                .contentType(MediaType.parseMediaType(DocumentAgent.NDJSON)).body(body);
+    }
+
+    private void writeChatEvent(OutputStream output, HttpServletResponse response, Object event) throws IOException {
+        output.write(json.writeValueAsBytes(event));
+        output.write('\n');
+        // Spring's response-body stream may defer flushes until the async task completes.
+        response.flushBuffer();
     }
 
     @PostMapping("/auth/register")

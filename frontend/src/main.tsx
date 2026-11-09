@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { ChatPage, type ChatHistory, type ChatModels, type Turn } from './chat'
+import { ChatPage, readChatStream, type ChatHistory, type ChatModels, type ChatRequest } from './chat'
 import { RagPage, type Rule, type SearchResult } from './rag'
 import { modeNames, ReportPage, reportLink, type Job, type JobReport } from './report'
 import './styles.css'
@@ -9,15 +9,19 @@ type Session = { username: string | null; csrfHeader: string; csrfToken: string 
 
 async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch('/api' + path, { ...options, cache: 'no-store' })
-  if (!response.ok) {
-    const body = await response.json().catch(() => null) as { message?: string } | null
-    const fallback = response.status === 401 ? '账号或密码不正确，或登录已过期。'
-      : response.status === 403 ? '会话校验失败，请刷新页面后重试。'
-      : '请求失败，请稍后重试。'
-    throw new Error(body?.message || fallback)
-  }
+  await checkResponse(response)
   const body = await response.text()
   return (body ? JSON.parse(body) : undefined) as T
+}
+
+async function checkResponse(response: Response) {
+  if (response.ok) return
+  const body = await response.json().catch(() => null) as { message?: string } | null
+  const fallback = response.status === 401 ? '账号或密码不正确，或登录已过期。'
+    : response.status === 403 ? '会话校验失败，请刷新页面后重试。'
+    : response.status === 413 ? '附件总大小超出限制。'
+    : '请求失败，请稍后重试。'
+  throw new Error(body?.message || fallback)
 }
 
 function mutate<T>(path: string, session: Session, body?: BodyInit, contentType?: string, method = 'POST') {
@@ -46,6 +50,20 @@ function loadChat(model: string, before?: number) {
 
 function loadChatModels() {
   return api<ChatModels>('/chat/models')
+}
+
+async function sendChat(request: ChatRequest, session: Session, onDelta: Parameters<typeof readChatStream>[1], signal: AbortSignal) {
+  const body = new FormData()
+  body.set('requestId', request.requestId)
+  body.set('message', request.message)
+  body.set('model', request.model)
+  request.files.forEach(file => body.append('files', file))
+  const response = await fetch('/api/chat/stream', {
+    method: 'POST', body, signal,
+    headers: { [session.csrfHeader]: session.csrfToken, Accept: 'application/x-ndjson' },
+  })
+  await checkResponse(response)
+  return readChatStream(response, onDelta)
 }
 
 function Icon({ type }: { type: 'logo' | 'doc' | 'arrow' | 'download' | 'history' | 'spark' }) {
@@ -198,7 +216,7 @@ function App() {
           {register ? '已有账号？返回登录' : '没有账号？创建账号'}
         </button>
       </section> : showChat && session ? <ChatPage key={username} load={loadChat} loadModels={loadChatModels}
-        send={request => mutate<Turn>('/chat', session, JSON.stringify(request), 'application/json')} />
+        send={(request, onDelta, signal) => sendChat(request, session, onDelta, signal)} />
         : showRag && session ? <RagPage load={loadRules}
         add={draft => mutate<Rule>('/knowledge', session, JSON.stringify(draft), 'application/json')}
         extract={async file => {

@@ -55,3 +55,10 @@ CREATE TABLE IF NOT EXISTS chat_turn_details (
     reasoning TEXT NULL,
     FOREIGN KEY (turn_id) REFERENCES chat_turn (id) ON DELETE CASCADE
 ) DEFAULT CHARACTER SET utf8mb4;
+
+CREATE TABLE IF NOT EXISTS chat_turn_attachments (
+    turn_id BIGINT NOT NULL PRIMARY KEY,
+    names JSON NOT NULL,
+    fingerprint CHAR(64) CHARACTER SET ascii NOT NULL,
+    FOREIGN KEY (turn_id) REFERENCES chat_turn (id) ON DELETE CASCADE
+) DEFAULT CHARACTER SET utf8mb4;

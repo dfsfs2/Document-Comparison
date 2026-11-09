@@ -5,7 +5,9 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.function.Function;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
@@ -20,7 +22,9 @@ import tools.jackson.databind.ObjectMapper;
 class ChatMemory {
     private static final String TURN_TABLES = "FROM chat_turn t LEFT JOIN chat_turn_model m ON m.turn_id = t.id "
             + "LEFT JOIN chat_turn_details d ON d.turn_id = t.id ";
-    private static final String TURNS = "SELECT t.id, t.question, t.answer, t.created_at, m.model, d.reasoning " + TURN_TABLES;
+    private static final String TURNS = "SELECT t.id, t.question, t.answer, t.created_at, m.model, d.reasoning, "
+            + "a.names AS attachment_names, a.fingerprint AS attachment_fingerprint " + TURN_TABLES
+            + "LEFT JOIN chat_turn_attachments a ON a.turn_id = t.id ";
     private static final String MODEL_SCOPE = "WHERE t.owner_id = :owner AND CAST(m.model AS BINARY) = CAST(:model AS BINARY) ";
     // Older turns remain visible, but were generated with mixed-model context.
     private static final String MEMORY_SCOPE = MODEL_SCOPE + "AND d.turn_id IS NOT NULL ";
@@ -47,36 +51,46 @@ class ChatMemory {
         List<Turn> newest = jdbc.sql(TURNS + MODEL_SCOPE + "AND t.id < :before ORDER BY t.id DESC LIMIT :limit")
                 .param("owner", owner).param("model", resolveModel(model))
                 .param("before", before == null ? Long.MAX_VALUE : before)
-                .param("limit", HISTORY_PAGE + 1).query(ChatMemory::turn).list();
+                .param("limit", HISTORY_PAGE + 1).query(this::turn).list();
         boolean more = newest.size() > HISTORY_PAGE;
         List<Turn> page = newest.subList(0, Math.min(newest.size(), HISTORY_PAGE));
         return new Page(page.reversed(), more ? page.getLast().id() : null);
     }
 
     Turn send(long owner, Send request) {
+        return send(owner, request, List.of(), agent::chat);
+    }
+
+    Turn send(long owner, Send request, List<ChatAttachment> files, Function<Prompt, DocumentAgent.ChatAnswer> call) {
         String message = request.message() == null ? "" : request.message().strip();
+        if (message.isEmpty() && !files.isEmpty()) {
+            message = "请查看附件并概述主要内容。";
+        }
         if (request.requestId() == null || message.isEmpty() || message.length() > 2000) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请输入 1–2,000 字的消息。");
         }
+        final String question = message;
+        String fingerprint = ChatAttachment.fingerprint(files);
         validateModel(request.model());
         UUID requestId = request.requestId();
-        Turn saved = completed(owner, requestId, message, request.model());
+        Turn saved = completed(owner, requestId, question, request.model(), fingerprint);
         if (saved != null) {
             return saved;
         }
         String model = resolveModel(request.model());
         long head = latestId(owner, model);
         List<RecentTurn> recent = recent(owner, model, head);
-        List<Context> recalled = recent.isEmpty() ? List.of() : recall(owner, model, recent.getFirst().id(), message);
-        var prompt = new Prompt(message, recent.stream().map(turn -> new Context(turn.question(), turn.answer())).toList(),
+        List<Context> recalled = recent.isEmpty() ? List.of() : recall(owner, model, recent.getFirst().id(), question);
+        var prompt = new Prompt(question, recent.stream().map(turn -> new Context(turn.question(), turn.answer())).toList(),
                 recalled, model);
-        DocumentAgent.ChatAnswer answer = agent.chat(prompt);
+        DocumentAgent.ChatAnswer answer = call.apply(prompt);
+        List<String> names = files.stream().map(ChatAttachment::name).toList();
 
         saved = transactions.execute(status -> {
             // Serialize commits for an account without holding a database lock during the model call.
             jdbc.sql("SELECT id FROM app_user WHERE id = :owner FOR UPDATE")
                     .param("owner", owner).query(Long.class).single();
-            Turn replay = completed(owner, requestId, message, request.model());
+            Turn replay = completed(owner, requestId, question, model, fingerprint);
             if (replay != null) {
                 return replay;
             }
@@ -84,14 +98,19 @@ class ChatMemory {
                 throw new ResponseStatusException(HttpStatus.CONFLICT, "该模型的对话已有一条新回复，请重试这条消息。");
             }
             jdbc.sql("INSERT INTO chat_turn (owner_id, request_id, question, answer) VALUES (:owner, :id, :question, :answer)")
-                    .param("owner", owner).param("id", requestId.toString()).param("question", message)
+                    .param("owner", owner).param("id", requestId.toString()).param("question", question)
                     .param("answer", answer.answer()).update();
-            Turn turn = completed(owner, requestId, message, null);
+            Turn turn = completed(owner, requestId, question, null, null);
             jdbc.sql("INSERT INTO chat_turn_model (turn_id, model) VALUES (:turn, :model)")
                     .param("turn", turn.id()).param("model", answer.model()).update();
             jdbc.sql("INSERT INTO chat_turn_details (turn_id, reasoning) VALUES (:turn, :reasoning)")
                     .param("turn", turn.id()).param("reasoning", answer.reasoning()).update();
-            return new Turn(turn.id(), turn.question(), turn.answer(), turn.createdAt(), answer.model(), answer.reasoning());
+            if (!names.isEmpty()) {
+                jdbc.sql("INSERT INTO chat_turn_attachments (turn_id, names, fingerprint) VALUES (:turn, :names, :fingerprint)")
+                        .param("turn", turn.id()).param("names", json.writeValueAsString(names))
+                        .param("fingerprint", fingerprint).update();
+            }
+            return new Turn(turn.id(), turn.question(), turn.answer(), turn.createdAt(), answer.model(), answer.reasoning(), names);
         });
         if (saved.id() > head) {
             cache(owner, model, latest(owner, model, saved.id()));
@@ -99,13 +118,20 @@ class ChatMemory {
         return saved;
     }
 
-    private Turn completed(long owner, UUID requestId, String message, String model) {
-        Turn saved = jdbc.sql(TURNS + "WHERE t.owner_id = :owner AND t.request_id = :request")
-                .param("owner", owner).param("request", requestId.toString()).query(ChatMemory::turn).optional().orElse(null);
-        if (saved != null && (!saved.question().equals(message) || (model != null && !model.equals(saved.model())))) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "发送编号已用于其他消息或模型，请重新发送。");
+    private Turn completed(long owner, UUID requestId, String message, String model, String fingerprint) {
+        Saved saved = jdbc.sql(TURNS + "WHERE t.owner_id = :owner AND t.request_id = :request")
+                .param("owner", owner).param("request", requestId.toString())
+                .query((row, index) -> new Saved(turn(row, index), row.getString("attachment_fingerprint")))
+                .optional().orElse(null);
+        if (saved == null) {
+            return null;
         }
-        return saved;
+        Turn turn = saved.turn();
+        if (!turn.question().equals(message) || (model != null && !model.equals(turn.model()))
+                || !Objects.equals(fingerprint, saved.fingerprint())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "发送编号已用于其他消息、附件或模型，请重新发送。");
+        }
+        return turn;
     }
 
     private String resolveModel(String model) {
@@ -175,13 +201,17 @@ class ChatMemory {
         return "doc-compare:chat:recent:" + owner + ":" + model;
     }
 
-    private static Turn turn(ResultSet row, int index) throws SQLException {
+    private Turn turn(ResultSet row, int index) throws SQLException {
+        String names = row.getString("attachment_names");
         return new Turn(row.getLong("id"), row.getString("question"), row.getString("answer"),
-                row.getTimestamp("created_at").toInstant(), row.getString("model"), row.getString("reasoning"));
+                row.getTimestamp("created_at").toInstant(), row.getString("model"), row.getString("reasoning"),
+                names == null ? List.of() : json.readerForListOf(String.class).readValue(names));
     }
 
     record Send(UUID requestId, String message, String model) {}
-    record Turn(long id, String question, String answer, Instant createdAt, String model, String reasoning) {}
+    record Turn(long id, String question, String answer, Instant createdAt, String model, String reasoning,
+                List<String> attachments) {}
+    private record Saved(Turn turn, String fingerprint) {}
     record Page(List<Turn> turns, Long nextBefore) {}
     private record RecentTurn(long id, String question, String answer) {}
     record Context(String question, String answer) {}

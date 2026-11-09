@@ -11,6 +11,9 @@ server:
         same-site: lax
         secure: ${SESSION_COOKIE_SECURE:false}
 spring:
+  mvc:
+    async:
+      request-timeout: 150s
   datasource:
     url: ${JDBC_URL:jdbc:mysql://localhost:3306/doc_compare?connectionTimeZone=UTC}
     username: ${MYSQL_USER:doc_compare}

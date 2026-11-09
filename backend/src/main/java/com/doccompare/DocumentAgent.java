@@ -1,7 +1,11 @@
 package com.doccompare;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.function.Consumer;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.core.io.ByteArrayResource;
@@ -16,11 +20,13 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.server.ResponseStatusException;
+import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 @Component
 class DocumentAgent {
+    static final String NDJSON = "application/x-ndjson";
     private final RestClient client;
     private final ObjectMapper json;
 
@@ -81,9 +87,7 @@ class DocumentAgent {
         try {
             ChatAnswer result = client.post().uri("/chat").contentType(MediaType.APPLICATION_JSON)
                     .body(prompt).retrieve().body(ChatAnswer.class);
-            if (result != null && result.answer() != null && !result.answer().isBlank()
-                    && result.model() != null && !result.model().isBlank() && result.model().length() <= 128
-                    && prompt.model().equals(result.model())) {
+            if (validAnswer(result, prompt.model())) {
                 return result;
             }
         } catch (RestClientResponseException error) {
@@ -100,6 +104,47 @@ class DocumentAgent {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "连接聊天服务失败，请稍后重试。", error);
         }
         throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "百炼返回了空回复，请重试。");
+    }
+
+    ChatAnswer streamChat(ChatMemory.Prompt prompt, List<ChatAttachment> files, Consumer<ChatDelta> emit) {
+        var parts = new LinkedMultiValueMap<String, Object>();
+        parts.add("prompt", json.writeValueAsString(prompt));
+        for (ChatAttachment file : files) {
+            parts.add("files", document(file.data(), file.name()));
+        }
+        try {
+            return client.post().uri("/chat/stream").contentType(MediaType.MULTIPART_FORM_DATA)
+                    .accept(MediaType.parseMediaType(NDJSON)).body(parts).exchange((request, response) -> {
+                        if (!response.getStatusCode().is2xxSuccessful()) {
+                            AgentError error = json.readValue(response.getBody(), AgentError.class);
+                            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, error.detail());
+                        }
+                        var lines = new BufferedReader(new InputStreamReader(response.getBody(), StandardCharsets.UTF_8));
+                        for (String line; (line = lines.readLine()) != null; ) {
+                            ChatEvent event = json.readValue(line, ChatEvent.class);
+                            if ("error".equals(event.type())) {
+                                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, event.message());
+                            }
+                            if ("done".equals(event.type())) {
+                                var answer = new ChatAnswer(event.answer(), event.model(), event.reasoning());
+                                if (validAnswer(answer, prompt.model())) {
+                                    return answer;
+                                }
+                                break;
+                            }
+                            if (event.text() != null && ("reasoning".equals(event.type()) || "answer".equals(event.type()))) {
+                                emit.accept(new ChatDelta(event.type(), event.text()));
+                            }
+                        }
+                        throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "回复中断，请重试这条消息。");
+                    });
+        } catch (RestClientException | JacksonException error) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "连接聊天服务失败，请稍后重试。", error);
+        }
+    }
+
+    private static boolean validAnswer(ChatAnswer result, String model) {
+        return result != null && result.answer() != null && !result.answer().isBlank() && model.equals(result.model());
     }
 
     ChatModels chatModels() {
@@ -160,7 +205,9 @@ class DocumentAgent {
 
     record AgentError(String detail) {}
     record ChatAnswer(String answer, String model, String reasoning) {}
-    record ChatModels(String defaultModel, List<String> models) {}
+    record ChatModels(String defaultModel, List<String> models, List<String> visionModels) {}
+    record ChatDelta(String type, String text) {}
+    private record ChatEvent(String type, String text, String message, String model, String answer, String reasoning) {}
     record ExtractedText(String text) {}
     record Result(byte[] output, int paragraphs, int tables, String mode, List<String> rules, JsonNode report) {}
 }

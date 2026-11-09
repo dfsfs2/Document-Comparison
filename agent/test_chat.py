@@ -1,9 +1,16 @@
+from io import BytesIO
+import json
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
 
-from server import ChatRequest, ConversationTurn, chat, chat_models
+from server import ChatRequest, ConversationTurn, chat, chat_models, chat_payload, stream_chat
+
+
+def sse(*chunks):
+    return BytesIO(b"".join(b"data: " + (json.dumps(chunk).encode() if isinstance(chunk, dict) else chunk)
+                           + b"\n\n" for chunk in chunks))
 
 
 class ChatPromptTest(TestCase):
@@ -67,8 +74,9 @@ class ChatPromptTest(TestCase):
         client.post.return_value = {"model": "MiniMax-M2.5", "choices": [{"message": {"content": "回复"}}]}
         self.assertEqual(chat_models()["models"], [
             "qwen-plus", "qwen-flash", "qwen-max", "deepseek-v4.1-flash",
-            "kimi-k2.6", "glm-5.2", "MiniMax-M2.5",
+            "kimi-k2.6", "glm-5.2", "MiniMax-M2.5", "qwen3.6-plus",
         ])
+        self.assertEqual(chat_models()["visionModels"], ["qwen3.6-plus"])
         result = chat(ChatRequest(message="你好", recent=[], recalled=[], model="MiniMax-M2.5"))
         self.assertEqual(result["model"], "MiniMax-M2.5")
         self.assertIsNone(result["reasoning"])
@@ -93,6 +101,42 @@ class ChatPromptTest(TestCase):
     @patch.dict("os.environ", {"DASHSCOPE_CHAT_MODEL": "qwen-plus",
                              "DASHSCOPE_CHAT_MODELS": " qwen-max, qwen-plus, qwen-max, "})
     def test_catalogue_keeps_default_and_deduplicates_choices(self):
-        self.assertEqual(chat_models(), {"defaultModel": "qwen-plus", "models": ["qwen-plus", "qwen-max"]})
+        self.assertEqual(chat_models(), {"defaultModel": "qwen-plus", "models": ["qwen-plus", "qwen-max"], "visionModels": []})
         with patch.dict("os.environ", {"DASHSCOPE_CHAT_MODELS": ""}):
-            self.assertEqual(chat_models(), {"defaultModel": "qwen-plus", "models": ["qwen-plus"]})
+            self.assertEqual(chat_models(), {"defaultModel": "qwen-plus", "models": ["qwen-plus"], "visionModels": []})
+
+    def test_stream_delivers_reasoning_then_answer_and_requires_terminal_marker(self):
+        client = Mock()
+        model = "glm-5.2"
+        chunks = [{"model": model, "choices": [{"delta": delta}]} for delta in
+                  ({"reasoning_content": "正在"}, {"reasoning_content": "计算"}, {"content": "42"})]
+        client.open.return_value = sse(*chunks, b"[DONE]")
+        events = [json.loads(line) for line in stream_chat(client, {"model": model})]
+        self.assertEqual(events, [{"type": "reasoning", "text": "正在"}, {"type": "reasoning", "text": "计算"},
+                                  {"type": "answer", "text": "42"},
+                                  {"type": "done", "model": model, "answer": "42", "reasoning": "正在计算"}])
+        client.open.return_value = sse(*chunks)
+        self.assertEqual([json.loads(line) for line in stream_chat(client, {"model": model})][-1]["type"], "error")
+
+    def test_stream_checks_model_before_forwarding_content(self):
+        client = Mock()
+        client.open.return_value = sse({"model": "qwen-plus", "choices": [{"delta": {"content": "错的模型"}}]}, b"[DONE]")
+        events = [json.loads(line) for line in stream_chat(client, {"model": "glm-5.2"})]
+        self.assertEqual([event["type"] for event in events], ["error"])
+
+    @patch.dict("os.environ", {"DASHSCOPE_CHAT_MODELS": "glm-5.2,qwen3.6-plus"})
+    def test_attachments_keep_the_selected_model_and_require_vision_for_images(self):
+        client = Mock(chat_model="qwen-plus", key="fixture")
+        request = ChatRequest(message="请总结", recent=[], recalled=[], model="glm-5.2")
+        document = Mock(filename="规则.txt", file=BytesIO("测试文档内容".encode()))
+        payload = chat_payload(client, request, [document])
+        self.assertEqual(payload["model"], "glm-5.2")
+        self.assertIn("测试文档内容", payload["messages"][-1]["content"])
+        png = b"\x89PNG\r\n\x1a\nfixture"
+        with self.assertRaises(HTTPException) as error:
+            chat_payload(client, request, [Mock(filename="image.png", file=BytesIO(png))])
+        self.assertEqual(error.exception.status_code, 422)
+        request.model = "qwen3.6-plus"
+        payload = chat_payload(client, request, [Mock(filename="image.png", file=BytesIO(png))])
+        self.assertEqual(payload["model"], "qwen3.6-plus")
+        self.assertTrue(payload["messages"][-1]["content"][0]["image_url"]["url"].startswith("data:image/png;base64,"))
