@@ -12,7 +12,8 @@ class ChatPromptTest(TestCase):
         client = bailian.return_value
         client.key = "fixture"
         client.chat_model = "configured-model"
-        client.post.return_value = {"choices": [{"message": {"content": "  可以继续。  "}}]}
+        client.post.return_value = {"model": "configured-model",
+                                    "choices": [{"message": {"content": "  可以继续。  "}}]}
         response = chat(ChatRequest(
             message="现在的问题", recent=[ConversationTurn(question="上一问", answer="上一答")],
             recalled=[ConversationTurn(question="旧项目代号", answer="星海")],
@@ -43,11 +44,12 @@ class ChatPromptTest(TestCase):
         client = bailian.return_value
         client.key = "fixture"
         client.chat_model = "qwen-plus"
-        client.post.return_value = {"choices": [{"message": {"content": "回复"}}]}
+        client.post.return_value = {"model": "qwen-flash", "choices": [{"message": {"content": "回复"}}]}
         self.assertEqual(chat(ChatRequest(message="你好", recent=[], recalled=[], model="qwen-flash")),
                          {"answer": "回复", "model": "qwen-flash"})
         self.assertEqual(client.post.call_args.args[1]["model"], "qwen-flash")
         self.assertIs(client.post.call_args.args[1]["enable_thinking"], False)
+        self.assertIn("qwen-flash", client.post.call_args.args[1]["messages"][0]["content"])
         client.post.reset_mock()
         with self.assertRaises(HTTPException) as error:
             chat(ChatRequest(message="你好", recent=[], recalled=[], model="unlisted"))
@@ -60,7 +62,7 @@ class ChatPromptTest(TestCase):
         client = bailian.return_value
         client.key = "fixture"
         client.chat_model = "qwen-plus"
-        client.post.return_value = {"choices": [{"message": {"content": "回复"}}]}
+        client.post.return_value = {"model": "MiniMax-M2.5", "choices": [{"message": {"content": "回复"}}]}
         self.assertEqual(chat_models()["models"], [
             "qwen-plus", "qwen-flash", "qwen-max", "deepseek-v4.1-flash",
             "kimi-k2.6", "glm-5.2", "MiniMax-M2.5",
@@ -68,6 +70,22 @@ class ChatPromptTest(TestCase):
         result = chat(ChatRequest(message="你好", recent=[], recalled=[], model="MiniMax-M2.5"))
         self.assertEqual(result["model"], "MiniMax-M2.5")
         self.assertNotIn("enable_thinking", client.post.call_args.args[1])
+
+    @patch.dict("os.environ", {"DASHSCOPE_CHAT_MODELS": "deepseek-v4.1-flash"})
+    @patch("server.Bailian")
+    def test_rejects_missing_or_different_model_reported_by_bailian(self, bailian):
+        client = bailian.return_value
+        client.key = "fixture"
+        client.chat_model = "qwen-plus"
+        request = ChatRequest(message="你好", recent=[], recalled=[], model="deepseek-v4.1-flash")
+        for metadata in ({}, {"model": "qwen-plus"}):
+            with self.subTest(metadata=metadata):
+                client.post.return_value = {**metadata, "choices": [{"message": {"content": "回复"}}]}
+                with self.assertRaises(HTTPException) as error:
+                    chat(request)
+                self.assertEqual(error.exception.status_code, 502)
+                self.assertIn("模型标识", error.exception.detail)
+        self.assertEqual(client.post.call_count, 2)
 
     @patch.dict("os.environ", {"DASHSCOPE_CHAT_MODEL": "qwen-plus",
                              "DASHSCOPE_CHAT_MODELS": " qwen-max, qwen-plus, qwen-max, "})

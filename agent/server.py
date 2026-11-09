@@ -77,6 +77,9 @@ def chat(request: ChatRequest):
         raise HTTPException(503, "百炼 API Key 尚未配置，请检查 DASHSCOPE_API_KEY。")
     messages = [{"role": "system", "content": (
         "你是文档对照工作台的聊天助手。按用户的语言回答。"
+        f"本轮调用的模型标识是 {model}。用户问你是什么模型、型号或版本时，"
+        "直接给出本轮模型标识。历史对话中的自我介绍只用于理解历史背景，"
+        "回答当前模型身份时以本轮标识为准。"
         "较早的对话摘录仅供理解背景，结合当前问题使用，并以用户较新的表述为准。"
     )}]
     if request.recalled:
@@ -91,10 +94,14 @@ def chat(request: ChatRequest):
         payload["enable_thinking"] = False
     try:
         result = client.post("/chat/completions", payload, timeout=75)
+        reported_model = result.get("model") if isinstance(result, dict) else None
+        if reported_model != model:
+            LOG.warning("Bailian chat model mismatch: requested=%r, reported=%.128r", model, reported_model)
+            raise HTTPException(502, "百炼返回的模型标识校验失败，请检查所选模型或稍后重试。")
         answer = result["choices"][0]["message"]["content"]
         if not isinstance(answer, str) or not answer.strip():
             raise ValueError("Empty chat completion")
-        return {"answer": answer.strip()[:8000], "model": model}
+        return {"answer": answer.strip()[:8000], "model": reported_model}
     except (OSError, ValueError, TypeError, KeyError, IndexError) as error:
         LOG.warning("Bailian chat unavailable: %s", type(error).__name__)
         if isinstance(error, HTTPError) and error.code in (400, 403, 404):
