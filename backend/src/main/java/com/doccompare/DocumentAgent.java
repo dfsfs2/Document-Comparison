@@ -83,7 +83,7 @@ class DocumentAgent {
                     .body(prompt).retrieve().body(ChatAnswer.class);
             if (result != null && result.answer() != null && !result.answer().isBlank()
                     && result.model() != null && !result.model().isBlank() && result.model().length() <= 128
-                    && (prompt.model() == null || prompt.model().equals(result.model()))) {
+                    && prompt.model().equals(result.model())) {
                 return result;
             }
         } catch (RestClientResponseException error) {
@@ -159,7 +159,7 @@ class DocumentAgent {
     }
 
     record AgentError(String detail) {}
-    record ChatAnswer(String answer, String model) {}
+    record ChatAnswer(String answer, String model, String reasoning) {}
     record ChatModels(String defaultModel, List<String> models) {}
     record ExtractedText(String text) {}
     record Result(byte[] output, int paragraphs, int tables, String mode, List<String> rules, JsonNode report) {}

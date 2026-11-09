@@ -135,6 +135,9 @@ h2 { margin: 0; font-size: 18px; letter-spacing: -.02em; }
 .chat-message p { margin: 0; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
 .chat-user { justify-self: end; background: #e9f0e4; }
 .chat-model { justify-self: start; border: 1px solid var(--border); background: white; }
+.chat-reasoning { margin: 6px 0 10px; padding: 6px 9px; border-left: 2px solid var(--border); color: var(--muted); font-size: 13px; }
+.chat-reasoning summary { cursor: pointer; }
+.chat-reasoning[open] summary { margin-bottom: 6px; }
 .chat-empty, .chat-pending { margin: 8px 0; color: var(--muted); font-size: 13px; }
 .chat-older { display: flex; margin: 0 auto 10px; }
 .chat-compose { display: grid; gap: 8px; margin-top: 15px; }

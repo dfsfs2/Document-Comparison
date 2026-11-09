@@ -49,3 +49,9 @@ CREATE TABLE IF NOT EXISTS chat_turn_model (
     model VARCHAR(128) NOT NULL,
     FOREIGN KEY (turn_id) REFERENCES chat_turn (id) ON DELETE CASCADE
 ) DEFAULT CHARACTER SET utf8mb4;
+
+CREATE TABLE IF NOT EXISTS chat_turn_details (
+    turn_id BIGINT NOT NULL PRIMARY KEY,
+    reasoning TEXT NULL,
+    FOREIGN KEY (turn_id) REFERENCES chat_turn (id) ON DELETE CASCADE
+) DEFAULT CHARACTER SET utf8mb4;

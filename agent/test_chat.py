@@ -18,7 +18,7 @@ class ChatPromptTest(TestCase):
             message="现在的问题", recent=[ConversationTurn(question="上一问", answer="上一答")],
             recalled=[ConversationTurn(question="旧项目代号", answer="星海")],
         ))
-        self.assertEqual(response, {"answer": "可以继续。", "model": "configured-model"})
+        self.assertEqual(response, {"answer": "可以继续。", "model": "configured-model", "reasoning": None})
         path, payload = client.post.call_args.args
         self.assertEqual(path, "/chat/completions")
         self.assertEqual(payload["model"], "configured-model")
@@ -44,11 +44,13 @@ class ChatPromptTest(TestCase):
         client = bailian.return_value
         client.key = "fixture"
         client.chat_model = "qwen-plus"
-        client.post.return_value = {"model": "qwen-flash", "choices": [{"message": {"content": "回复"}}]}
+        client.post.return_value = {"model": "qwen-flash", "choices": [
+            {"message": {"content": "回复", "reasoning_content": "  百炼返回的推理  "}},
+        ]}
         self.assertEqual(chat(ChatRequest(message="你好", recent=[], recalled=[], model="qwen-flash")),
-                         {"answer": "回复", "model": "qwen-flash"})
+                         {"answer": "回复", "model": "qwen-flash", "reasoning": "百炼返回的推理"})
         self.assertEqual(client.post.call_args.args[1]["model"], "qwen-flash")
-        self.assertIs(client.post.call_args.args[1]["enable_thinking"], False)
+        self.assertIs(client.post.call_args.args[1]["enable_thinking"], True)
         self.assertIn("qwen-flash", client.post.call_args.args[1]["messages"][0]["content"])
         client.post.reset_mock()
         with self.assertRaises(HTTPException) as error:
@@ -69,6 +71,7 @@ class ChatPromptTest(TestCase):
         ])
         result = chat(ChatRequest(message="你好", recent=[], recalled=[], model="MiniMax-M2.5"))
         self.assertEqual(result["model"], "MiniMax-M2.5")
+        self.assertIsNone(result["reasoning"])
         self.assertNotIn("enable_thinking", client.post.call_args.args[1])
 
     @patch.dict("os.environ", {"DASHSCOPE_CHAT_MODELS": "deepseek-v4.1-flash"})

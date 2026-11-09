@@ -38,8 +38,10 @@ function loadRules() {
   return api<Rule[]>('/knowledge')
 }
 
-function loadChat(before?: number) {
-  return api<ChatHistory>(before === undefined ? '/chat' : `/chat?before=${before}`)
+function loadChat(model: string, before?: number) {
+  const query = new URLSearchParams({ model })
+  if (before !== undefined) query.set('before', String(before))
+  return api<ChatHistory>(`/chat?${query}`)
 }
 
 function loadChatModels() {

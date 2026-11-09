@@ -67,8 +67,9 @@ class WorkspaceController {
     }
 
     @GetMapping("/chat")
-    ChatMemory.Page chatHistory(Principal user, @RequestParam(required = false) Long before) {
-        return chat.history(ownerId(user), before);
+    ChatMemory.Page chatHistory(Principal user, @RequestParam(required = false) String model,
+                                @RequestParam(required = false) Long before) {
+        return chat.history(ownerId(user), model, before);
     }
 
     @GetMapping("/chat/models")

@@ -15,6 +15,7 @@ from knowledge_import import extract_text
 app = FastAPI(title="Document Comparison Agent", docs_url=None, redoc_url=None, openapi_url=None)
 LOG = logging.getLogger(__name__)
 DEFAULT_CHAT_MODELS = "qwen-flash,qwen-max,deepseek-v4.1-flash,kimi-k2.6,glm-5.2,MiniMax-M2.5"
+THINKING_BUDGET_MODELS = {"qwen-plus", "qwen-flash", "glm-5.2"}
 
 
 class KnowledgeRule(BaseModel):
@@ -89,19 +90,26 @@ def chat(request: ChatRequest):
         messages.append({"role": "user", "content": turn.question})
         messages.append({"role": "assistant", "content": turn.answer[:2000]})
     messages.append({"role": "user", "content": request.message})
-    payload = {"model": model, "max_tokens": 1536, "messages": messages}
-    if not model.casefold().startswith("minimax"):
-        payload["enable_thinking"] = False
+    payload = {"model": model, "max_tokens": 4096, "messages": messages}
+    if model in THINKING_BUDGET_MODELS:
+        payload.update(enable_thinking=True, thinking_budget=1024)
+    elif model == "deepseek-v4.1-flash":
+        payload.update(enable_thinking=True, reasoning_effort="low")
+    elif model == "kimi-k2.6":
+        payload["enable_thinking"] = True
     try:
         result = client.post("/chat/completions", payload, timeout=75)
         reported_model = result.get("model") if isinstance(result, dict) else None
         if reported_model != model:
             LOG.warning("Bailian chat model mismatch: requested=%r, reported=%.128r", model, reported_model)
             raise HTTPException(502, "百炼返回的模型标识校验失败，请检查所选模型或稍后重试。")
-        answer = result["choices"][0]["message"]["content"]
+        completion = result["choices"][0]["message"]
+        answer = completion["content"]
         if not isinstance(answer, str) or not answer.strip():
             raise ValueError("Empty chat completion")
-        return {"answer": answer.strip()[:8000], "model": reported_model}
+        reasoning = completion.get("reasoning_content")
+        return {"answer": answer.strip()[:8000], "model": reported_model,
+                "reasoning": (reasoning.strip()[:16000] or None) if isinstance(reasoning, str) else None}
     except (OSError, ValueError, TypeError, KeyError, IndexError) as error:
         LOG.warning("Bailian chat unavailable: %s", type(error).__name__)
         if isinstance(error, HTTPError) and error.code in (400, 403, 404):
