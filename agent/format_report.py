@@ -175,6 +175,8 @@ class FormatReport:
     def __init__(self):
         self.counts = {"paragraph": 0, "table": 0, "section": 0}
         self.locations = []
+        self.review_count = 0
+        self.review_locations = []
 
     def add(self, kind, index, reason, changes, text=""):
         if not changes:
@@ -185,4 +187,13 @@ class FormatReport:
                                    "excerpt": clipped(" ".join(text.split()), 85), "changes": changes})
 
     def result(self):
-        return {"counts": self.counts, "locations": self.locations}
+        result = {"counts": self.counts, "locations": self.locations}
+        if self.review_count:
+            result["review"] = {"count": self.review_count, "locations": self.review_locations}
+        return result
+
+    def add_review(self, index, reason, text):
+        self.review_count += 1
+        if len(self.review_locations) < LIMIT:
+            self.review_locations.append({"index": index, "reason": reason,
+                                          "excerpt": clipped(" ".join(text.split()), 85)})

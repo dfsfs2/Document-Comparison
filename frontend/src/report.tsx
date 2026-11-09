@@ -8,7 +8,8 @@ export type Job = {
 type Kind = 'paragraph' | 'table' | 'section'
 type Change = { property: string; before: string; after: string; affectedRuns?: number }
 type Location = { kind: Kind; index: number; excerpt: string; reason: string; changes: Change[] }
-export type JobReport = { job: Job; report: { counts: Record<Kind, number>; locations: Location[] } }
+type Review = { count: number; locations: { index: number; excerpt: string; reason: string }[] }
+export type JobReport = { job: Job; report: { counts: Record<Kind, number>; locations: Location[]; review?: Review } }
 
 const names: Record<Kind, string> = { paragraph: '段落', table: '表格', section: '页面设置' }
 const kinds = Object.keys(names) as Kind[]
@@ -28,6 +29,7 @@ export function ReportPage({ id, load }: { id: string; load: (id: string) => Pro
   const [error, setError] = useState('')
   const [filter, setFilter] = useState<Kind | 'all'>('all')
   const [page, setPage] = useState(1)
+  const [reviewPage, setReviewPage] = useState(1)
 
   useEffect(() => {
     let current = true
@@ -46,6 +48,8 @@ export function ReportPage({ id, load }: { id: string; load: (id: string) => Pro
   const locations = report.locations.filter(location => filter === 'all' || location.kind === filter)
   const available = filter === 'all' ? total : report.counts[filter]
   const pageCount = Math.ceil(locations.length / pageSize)
+  const review = report.review
+  const reviewPages = Math.ceil((review?.locations.length ?? 0) / pageSize)
 
   return <>
     <section className="report-hero">
@@ -98,5 +102,24 @@ export function ReportPage({ id, load }: { id: string; load: (id: string) => Pro
         </div>}
       </>}
     </section>
+    {review && review.count > 0 && <section className="panel">
+      <div className="section-heading"><span className="step">02</span><h2>待复核段落 · {review.count} 处</h2></div>
+      <p className="report-note">这些段落暂时保留原格式。段落编号按它在目标文档中的顺序计算。</p>
+      {review.locations.length < review.count &&
+        <p className="report-note">本报告列出前 {review.locations.length} 处。</p>}
+      <ol className="report-changes">
+        {review.locations.slice((reviewPage - 1) * pageSize, reviewPage * pageSize).map(location =>
+          <li key={location.index}>
+            <h3>第 {location.index} 个段落</h3>
+            {location.excerpt && <blockquote>{location.excerpt}</blockquote>}
+            <p className="report-reason"><strong>待复核原因</strong> {location.reason}</p>
+          </li>)}
+      </ol>
+      {reviewPages > 1 && <div className="report-pagination">
+        <button className="quiet" disabled={reviewPage === 1} onClick={() => setReviewPage(reviewPage - 1)}>上一页</button>
+        <span aria-live="polite">第 {reviewPage} / {reviewPages} 页</span>
+        <button className="quiet" disabled={reviewPage === reviewPages} onClick={() => setReviewPage(reviewPage + 1)}>下一页</button>
+      </div>}
+    </section>}
   </>
 }

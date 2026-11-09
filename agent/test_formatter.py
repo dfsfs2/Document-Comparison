@@ -70,6 +70,65 @@ def package(body, styles="", extra_parts=()):
 
 
 class FormatTest(TestCase):
+    def test_matches_actual_template_variants_and_flags_unconfirmed_paragraphs(self):
+        template_styles = """
+        <w:style w:type="paragraph" w:styleId="a"><w:name w:val="章节导读"/>
+          <w:pPr><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:sz w:val="36"/></w:rPr></w:style>
+        <w:style w:type="paragraph" w:styleId="b"><w:name w:val="决议小标题"/>
+          <w:pPr><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:sz w:val="28"/></w:rPr></w:style>
+        """
+        reference = package("""
+            <w:p><w:pPr><w:pStyle w:val="a"/></w:pPr><w:r><w:t>项目范围</w:t></w:r></w:p>
+            <w:p><w:pPr><w:pStyle w:val="b"/></w:pPr><w:r><w:t>执行决议</w:t></w:r></w:p>
+            <w:p><w:r><w:t>这是一段参照正文。</w:t></w:r></w:p>
+            """, template_styles)
+        long_text = "完整句子虽然被标记成标题，但它提供详细的背景叙述。" * 6
+        target = package(f"""
+            <w:p><w:r><w:t>会议决定</w:t></w:r></w:p>
+            <w:p><w:r><w:rPr><w:sz w:val="20"/></w:rPr><w:t>二次检查</w:t></w:r></w:p>
+            <w:p><w:pPr><w:outlineLvl w:val="1"/></w:pPr><w:r><w:t>{long_text}</w:t></w:r></w:p>
+            """)
+        advisor = Advisor(True, [])
+        advisor.client.key = "test-key"
+        with patch.object(advisor.client, "match", return_value={
+            "1": {"styleId": "s2", "confidence": "high", "reason": "与模板的决议标题用途一致"},
+            "2": {"styleId": "s1", "confidence": "low", "reason": "可能是注记"},
+            "3": {"styleId": "invented", "confidence": "high", "reason": "无效编号"},
+        }) as call:
+            output, report = format_document(reference, target, advisor)
+        samples, paragraphs, _ = call.call_args.args
+        self.assertEqual([(sample["styleId"], sample["wordStyle"]) for sample in samples[:2]],
+                         [("s1", "章节导读"), ("s2", "决议小标题")])
+        self.assertEqual(paragraphs[2]["previous"], "会议决定")
+        self.assertEqual(paragraphs[1]["next"], "二次检查")
+        self.assertEqual(paragraphs[3]["roleHint"], "heading-2")
+        self.assertEqual(paragraphs[3]["length"], len(long_text))
+        formatted = Document(output)
+        self.assertEqual(val(prop(prop(formatted.paragraphs[0], "r"), "rPr"), "sz"), "28")
+        self.assertEqual(val(prop(prop(formatted.paragraphs[1], "r"), "rPr"), "sz"), "20")
+        self.assertEqual(content_projection(formatted.root), content_projection(Document(target).root))
+        self.assertEqual(report["report"]["review"]["count"], 2)
+        self.assertEqual([item["index"] for item in report["report"]["review"]["locations"]], [2, 3])
+        self.assertIn("第 2 个段落的决议小标题样式", report["report"]["locations"][0]["reason"])
+
+    def test_matches_custom_named_styles_locally_and_reviews_unmarked_headings(self):
+        def styled(style_id, size):
+            return (f'<w:style w:type="paragraph" w:styleId="{style_id}"><w:name w:val="条款主题"/>'
+                    f'<w:rPr><w:sz w:val="{size}"/></w:rPr></w:style>')
+
+        reference = package('<w:p><w:pPr><w:pStyle w:val="sA"/></w:pPr><w:r><w:t>权利与义务</w:t></w:r></w:p>'
+                            '<w:p><w:pPr><w:pStyle w:val="sA"/></w:pPr><w:r><w:t>合同终止条件</w:t></w:r></w:p>'
+                            '<w:p><w:r><w:t>合同正文的内容。</w:t></w:r></w:p>', styled("sA", 34))
+        target = package('<w:p><w:pPr><w:pStyle w:val="sB"/></w:pPr><w:r><w:t>交付安排</w:t></w:r></w:p>'
+                         '<w:p><w:r><w:t>验收标准</w:t></w:r></w:p>'
+                         '<w:p><w:r><w:t>双方应在商定时间交接货物。</w:t></w:r></w:p>', styled("sB", 20))
+        result, report = format_document(reference, target, Advisor(False))
+        first, second, third = Document(result).paragraphs
+        self.assertEqual(val(prop(prop(first, "r"), "rPr"), "sz"), "34")
+        self.assertIsNone(prop(prop(second, "r"), "rPr"))
+        self.assertEqual(val(prop(prop(third, "r"), "rPr"), "sz"), "22")
+        self.assertEqual(report["report"]["review"]["locations"][0]["index"], 2)
+
     def test_transfers_chinese_font_and_turns_off_inherited_automatic_spacing(self):
         reference_styles = """
         <w:docDefaults><w:rPrDefault><w:rPr>
@@ -222,14 +281,22 @@ class AdvisorTest(TestCase):
         self.assertEqual(Advisor(False, [custom]).retrieve("完全无关"), ([], "keyword"))
         self.assertEqual(Advisor(False, []).retrieve("标题"), ([], "empty"))
 
-    def test_passes_retrieved_knowledge_and_ignores_invented_roles(self):
+    def test_retrieves_rules_per_paragraph_and_ignores_invented_style_ids(self):
         with patch.dict("os.environ", {"DASHSCOPE_API_KEY": "test-key"}):
             advisor = Advisor(True)
+        samples = [{"styleId": "s4"}]
+        paragraphs = {i: {"text": text, "previous": "", "next": "", "wordStyle": "", "roleHint": "body"}
+                      for i, text in ((2, "文件总标题"), (3, "第二章 适用范围"))}
         with patch("advisor.index_knowledge", return_value=((1, 0), (0, 1), (0, 1),
                                                              (0, 1), (0, 1), (0, 1))), \
-                patch.object(advisor.client, "embed", return_value=[(1, 0)]), \
-                patch.object(advisor.client, "classify",
-                             return_value={"2": "heading-1", "3": "new-text", "99": "title"}) as call:
-            self.assertEqual(advisor.classify({2: "适用范围", 3: "项目备注"}), {2: "heading-1"})
-        self.assertEqual(call.call_args.args[1][0]["id"], "document-title")
+                patch.object(advisor.client, "embed", return_value=[(1, 0), (0, 1)]) as embed, \
+                patch.object(advisor.client, "match", return_value={
+                    "2": {"styleId": "s4", "confidence": "high", "reason": "与样本吻合"},
+                    "3": {"styleId": "invented", "confidence": "high"},
+                    "99": {"styleId": "s4", "confidence": "high"},
+                }) as call:
+            self.assertEqual(advisor.match(samples, paragraphs), {2: ("s4", "high", "与样本吻合")})
+        self.assertEqual(len(embed.call_args.args[0]), 2)
+        self.assertEqual(call.call_args.args[1][2]["ruleIds"][0], "document-title")
+        self.assertEqual(call.call_args.args[1][3]["ruleIds"][0], "chinese-headings")
         self.assertEqual(advisor.mode, "bailian")

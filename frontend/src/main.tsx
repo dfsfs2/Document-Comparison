@@ -238,7 +238,7 @@ function App() {
             </div>
             <label className="cloud">
               <span className="cloud-icon"><Icon type="spark" /></span>
-              <span><strong>百炼辅助识别</strong><small>开启后，少量短段落会发往阿里云百炼，用于识别标题与正文。</small></span>
+              <span><strong>百炼辅助识别</strong><small>开启后，部分模板样本、目标段落摘录、邻段和规则会发往百炼，用于匹配样式。</small></span>
               <input type="checkbox" checked={cloud} onChange={event => setCloud(event.target.checked)} disabled={busy} />
             </label>
             {error && <div className="error" role="alert">{error}</div>}

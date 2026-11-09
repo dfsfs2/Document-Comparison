@@ -1,13 +1,14 @@
 """Transfer visual properties while retaining the target OOXML package."""
-from collections import Counter, defaultdict
+from collections import defaultdict
 from copy import deepcopy
+from dataclasses import dataclass
 from io import BytesIO
 import re
 from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
 
 from lxml import etree as xml
 
-from format_report import FormatReport, ROLES, RunChanges, property_changes
+from format_report import FormatReport, ROLES, RunChanges, property_changes, signature
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
@@ -28,6 +29,9 @@ EAST_ASIAN_SCRIPTS = {
 TITLE_LABEL = re.compile(r"^(?:[（(]\s*(?:论文)?题\s*目\s*[）)]|(?:论文)?题\s*目\s*[:：])")
 AUTHOR_LABEL = re.compile(r"\s+(?=[（(]\s*作\s*者\s*[）)])")
 NUMBERED_HEADING = re.compile(r"([1-9][0-9]?(?:[.．][0-9]{1,2}){0,8})([.．、)）]?\s*)([^\W\d_].*)")
+STRUCTURAL_ROLES = {"table", "table-header", "list"}
+MAX_STYLE_SAMPLES = 32
+MAX_MATCH_PARAGRAPHS = 32
 PROPERTY_GROUPS = {"pPr": P, "rPr": R, "tblPr": TABLE, "sectPr": PAGE}
 # Full sibling order for ordered property groups.
 ORDERS = {
@@ -378,30 +382,165 @@ def numbered_heading(sample):
     return depth
 
 
-def paragraph_roles(document, advisor):
+def paragraph_roles(document, texts):
     roles = [classify(document, p) for p in document.paragraphs]
-    texts = [text_of(p).strip() for p in document.paragraphs]
     numbered = {i: depth for i, (role, sample) in enumerate(zip(roles, texts))
                 if role == "body" and (depth := numbered_heading(sample)) is not None}
     # Repeated numbering gives stronger evidence of headings than an isolated short numeric phrase.
     if len(numbered) < 2:
         numbered.clear()
-    snippets = {}
     first_text = next((i for i, sample in enumerate(texts) if sample), None)
     for i, sample in enumerate(texts):
         if roles[i] != "body" or not sample:
             continue
         if i in numbered:
             roles[i] = f"heading-{numbered[i]}"
-        elif i == first_text and (len(sample) <= 120 and TITLE_LABEL.match(sample)
-                                  or len(sample) <= 45 and not re.search(r"[。！？.!?；;：:]", sample)):
+        elif i == first_text and len(sample) <= 120 and TITLE_LABEL.match(sample):
             roles[i] = "title"
-        elif len(sample) <= 90 and len(snippets) < 32:
-            snippets[i] = sample
-    cloud_roles = advisor.classify(snippets)
-    for index, role in cloud_roles.items():
-        roles[index] = role
-    return roles, cloud_roles, numbered
+    return roles, numbered
+
+
+def word_style(document, paragraph):
+    style_id = val(prop(paragraph, "pPr"), "pStyle") or document.default_p
+    return val(document.style_map.get(style_id), "name")
+
+
+def style_hint(properties):
+    paragraph, run = properties
+    return {
+        "alignment": paragraph["jc"].get(W + "val"),
+        "fontSizeHalfPoints": run["sz"].get(W + "val"),
+        "bold": run["b"].get(W + "val") not in ("0", "false", "off"),
+    }
+
+
+@dataclass
+class TemplateSample:
+    index: int
+    role: str
+    name: str
+    properties: tuple
+    count: int = 1
+    prose_count: int = 0
+
+    @property
+    def id(self):
+        return f"s{self.index}"
+
+    @property
+    def label(self):
+        name = (self.name or ROLES[self.role])[:80]
+        return f"第 {self.index} 个段落的{name}样式"
+
+
+def template_samples(reference, texts, roles):
+    variants = {}
+    for index, (paragraph, text, role) in enumerate(zip(reference.paragraphs, texts, roles), 1):
+        if not text:
+            continue
+        name = word_style(reference, paragraph)
+        properties = style_for(reference, paragraph)
+        key = (role, name.casefold(), tuple(tuple(signature(item) for _, item in sorted(group.items()))
+                                          for group in properties))
+        if key in variants:
+            variants[key].count += 1
+        else:
+            variants[key] = TemplateSample(index, role, name, properties)
+        if role == "body" and (len(text) > 90 or re.search(r"[。！？.!?]$", text)):
+            variants[key].prose_count += 1
+    by_role = defaultdict(list)
+    for sample in variants.values():
+        by_role[sample.role].append(sample)
+    for group in by_role.values():
+        group.sort(key=lambda sample: (-sample.prose_count, -sample.count))
+    return list(variants.values()), by_role
+
+
+def local_match(role, name, text, level, by_role, by_name, cover):
+    compatible = [sample for sample in by_name.get(name.casefold(), ())
+                  if sample.role == role or role == "body" and sample.role not in STRUCTURAL_ROLES]
+    if len(compatible) == 1:
+        return compatible[0], "Word 样式名称一致。"
+    if len(compatible) > 1 and (role != "body" or len(text) <= 90):
+        return None, "参照文档的同名 Word 样式出现了不同的排版，需确认匹配项。"
+    shifted = "heading-1" if role == "title" else f"heading-{level + 1}" if level else ""
+    available = (by_role.get(shifted) if cover else None) or by_role.get(role)
+    available = available or by_role.get({"table-header": "table", "list": "body"}.get(role))
+    if not available:
+        return None, f"参照文档中未找到可确认的{ROLES[role]}样式。"
+    if role == "body" and not compatible and len(text) <= 90 and not re.search(r"[。！？.!?；;：:]", text):
+        if any(key not in STRUCTURAL_ROLES | {"body"} for key in by_role) or len(available) > 1:
+            return None, "短段落的用途不明确，参照文档有多种可用样式。"
+    if role not in STRUCTURAL_ROLES | {"body"} and len(available) > 1 and available[0].count == available[1].count:
+        return None, "参照文档同一层级有多个样式样本，无法确认应套用哪一个。"
+    if level:
+        return available[0], "按段落编号和参照文档的标题层级匹配。"
+    return available[0], f"按目标段落的{ROLES[role]}角色匹配。"
+
+
+def match_paragraphs(reference, target, advisor):
+    ref_texts = [text_of(p).strip() for p in reference.paragraphs]
+    ref_roles, _ = paragraph_roles(reference, ref_texts)
+    samples, by_role = template_samples(reference, ref_texts, ref_roles)
+    if not samples:
+        raise InvalidDocument("参照文档需要至少一个包含文字的段落。")
+    cover = (samples[0].role == "heading-1" and by_role["heading-1"][0].count == 1
+             and len(by_role["heading-1"]) == 1 and "title" not in by_role and "heading-2" in by_role
+             and numbered_heading(ref_texts[samples[0].index - 1]) is None)
+    by_name = defaultdict(list)
+    for sample in samples:
+        if sample.name:
+            by_name[sample.name.casefold()].append(sample)
+
+    texts = [text_of(p).strip() for p in target.paragraphs]
+    roles, numbered = paragraph_roles(target, texts)
+    decisions = {}
+    queued = []
+    neighbors = [index for index, text in enumerate(texts) if text]
+    default_name = val(target.style_map.get(target.default_p), "name")
+    for position, index in enumerate(neighbors):
+        paragraph = target.paragraphs[index]
+        role, text = roles[index], texts[index]
+        name = word_style(target, paragraph)
+        sample, reason = local_match(role, name, text, numbered.get(index), by_role, by_name, cover)
+        decisions[index] = (sample, f"本地匹配参照文档{sample.label}。{reason}" if sample else reason)
+        custom_style = name and name != default_name and name.casefold() not in by_name
+        if role not in STRUCTURAL_ROLES and (sample is None or role != "body" or len(text) <= 120 or position == 0 or custom_style):
+            priority = 0 if sample is None else 1 if role != "body" or position == 0 else 2
+            queued.append((priority, index, position, name))
+    if not advisor.use_cloud or not advisor.client.key or not queued:
+        return roles, decisions, by_role, cover
+
+    defaults = {group[0].id for group in by_role.values()}
+    available = sorted((s for s in samples if s.role not in STRUCTURAL_ROLES),
+                       key=lambda s: (s.id not in defaults, -s.count, s.index))[:MAX_STYLE_SAMPLES]
+    catalog = [{
+        "styleId": s.id, "referenceParagraph": s.index, "wordStyle": s.name[:80],
+        "roleHint": s.role, "occurrences": s.count, "example": ref_texts[s.index - 1][:90],
+        "outlineLevel": int(s.role.removeprefix("heading-")) if s.role.startswith("heading-") else None,
+        **style_hint(s.properties),
+    } for s in sorted(available, key=lambda s: s.index)]
+    inputs = {}
+    for _, index, position, name in sorted(queued)[:MAX_MATCH_PARAGRAPHS]:
+        inputs[index + 1] = {
+            "text": texts[index][:90], "length": len(texts[index]), "wordStyle": name[:80],
+            "roleHint": roles[index], "numberDepth": numbered.get(index),
+            "previous": texts[neighbors[position - 1]][:60] if position else "",
+            "next": texts[neighbors[position + 1]][:60] if position + 1 < len(neighbors) else "",
+            **style_hint(style_for(target, target.paragraphs[index])),
+        }
+    matched = advisor.match(catalog, inputs)
+    if matched is not None:
+        by_id = {sample.id: sample for sample in available}
+        for index in inputs:
+            style_id, confidence, reason = matched.get(index, (None, "low", "百炼未返回有效匹配。"))
+            sample = by_id.get(style_id)
+            if sample is not None and confidence == "high":
+                decisions[index - 1] = (sample, f"百炼匹配参照文档{sample.label}。" + reason)
+            else:
+                suggestion = f"可复核参照文档{sample.label}。" if sample else ""
+                decisions[index - 1] = (None, (reason or "百炼无法确认对应样式。") + suggestion)
+    return roles, decisions, by_role, cover
 
 
 def replace_properties(parent, name, properties, keys):
@@ -461,52 +600,26 @@ def load_document(data, role):
 def format_document(reference_data, target_data, advisor):
     reference = load_document(reference_data, "参照文档")
     target = load_document(target_data, "目标文档")
-    reference_roles, _, _ = paragraph_roles(reference, advisor)
-    target_roles, cloud_roles, numbered = paragraph_roles(target, advisor)
-    candidates = defaultdict(list)
-    for index, (paragraph, role) in enumerate(zip(reference.paragraphs, reference_roles), 1):
-        if text_of(paragraph).strip():
-            candidates[role].append((index, paragraph))
-    if not candidates:
-        raise InvalidDocument("参照文档需要至少一个包含文字的段落。")
-    # Some templates use Heading 1 for the cover title and Heading 2 for the first section level.
-    cover_heading = (next(iter(candidates)) == "heading-1" and len(candidates["heading-1"]) == 1
-                     and "title" not in candidates and "heading-2" in candidates
-                     and numbered_heading(text_of(candidates["heading-1"][0][1]).strip()) is None)
-    samples = {}
-    for role, paragraphs in candidates.items():
-        # Repeated formats take precedence over a one-off direct override.
-        styles = [style_for(reference, p) for _, p in paragraphs[:80]]
-        signatures = [tuple((key, xml.tostring(value)) for part in style
-                            for key, value in sorted(part.items())) for style in styles]
-        most_common = Counter(signatures).most_common(1)[0][0]
-        selected = signatures.index(most_common)
-        samples[role] = paragraphs[selected][0], styles[selected]
+    target_roles, decisions, by_role, cover = match_paragraphs(reference, target, advisor)
 
     author_runs = set()
-    if "body" in samples and ("title" in samples or cover_heading):
-        for paragraph, role in zip(target.paragraphs, target_roles):
-            if role == "title":
-                author_runs.update(title_author_runs(paragraph))
+    body = next(iter(by_role.get("body", ())), None)
+    if body:
+        for index, (sample, _) in decisions.items():
+            if sample and (sample.role == "title" or cover and sample.role == "heading-1" and target_roles[index] == "title"):
+                author_runs.update(title_author_runs(target.paragraphs[index]))
     before = content_projection(target.root)
     report = FormatReport()
     changed_paragraphs = 0
     for index, (paragraph, role) in enumerate(zip(target.paragraphs, target_roles), 1):
         runs = runs_of(paragraph)
-        if not runs:
+        if not runs or index - 1 not in decisions:
             continue
-        cover_role = None
-        if cover_heading:
-            if role == "title":
-                cover_role = "heading-1"
-            elif index - 1 in numbered:
-                cover_role = f"heading-{numbered[index - 1] + 1}"
-        sample_role = cover_role if cover_role in samples else role
-        if sample_role not in samples:
-            sample_role = {"table-header": "table", "list": "body"}.get(role)
-        if sample_role not in samples:
+        sample, reason = decisions[index - 1]
+        if sample is None:
+            report.add_review(index, reason, text_of(paragraph))
             continue
-        source_index, (paragraph_props, run_props) = samples[sample_role]
+        paragraph_props, run_props = sample.properties
         direct = prop(paragraph, "pPr")
         styles = target.chain(val(direct, "pStyle") or target.default_p)
         old_paragraph = paragraph_properties(target, direct, styles)
@@ -517,7 +630,7 @@ def format_document(reference_data, target_data, advisor):
         run_changes = RunChanges()
         for run in runs:
             old_run = run_properties(target, run, styles)
-            run_sample = samples["body"][1][1] if run in author_runs else run_props
+            run_sample = body.properties[1] if run in author_runs else run_props
             keep = mixed.copy()
             if next(run.iterancestors(W + "hyperlink"), None) is not None:
                 keep.add("color")
@@ -526,14 +639,6 @@ def format_document(reference_data, target_data, advisor):
             run_changes.add(old_run, run_properties(target, run, styles))
         changes = property_changes(old_paragraph, paragraph_properties(target, prop(paragraph, "pPr"), styles), "p:")
         changes.extend(run_changes.summarize())
-        method = "百炼辅助识别" if index - 1 in cloud_roles else "本地识别"
-        reason = f"{method}为{ROLES[role]}，匹配参照文档第 {source_index} 个段落的{ROLES[sample_role]}样式。"
-        if cover_role == sample_role:
-            reason = (f"{method}为{ROLES[role]}，按参照文档的章节层级，"
-                      f"匹配第 {source_index} 个段落的{ROLES[sample_role]}样式。")
-        elif role != sample_role:
-            reason = (f"{method}为{ROLES[role]}，参照文档缺少对应样式，"
-                      f"沿用参照文档第 {source_index} 个段落的{ROLES[sample_role]}样式。")
         if author_runs.intersection(runs):
             reason += "同段的作者信息使用参照文档的正文字符格式。"
         report.add("paragraph", index, reason, changes, text_of(paragraph))
