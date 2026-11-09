@@ -18,7 +18,8 @@ import tools.jackson.databind.ObjectMapper;
 
 @Service
 class ChatMemory {
-    private static final String COLUMNS = "id, question, answer, created_at";
+    private static final String TURNS = "SELECT t.id, t.question, t.answer, t.created_at, m.model "
+            + "FROM chat_turn t LEFT JOIN chat_turn_model m ON m.turn_id = t.id ";
     private static final int HISTORY_PAGE = 30;
     private static final int RECENT_TURNS = 8;
     private static final Duration MEMORY_TTL = Duration.ofMinutes(30);
@@ -39,8 +40,7 @@ class ChatMemory {
     }
 
     Page history(long owner, Long before) {
-        List<Turn> newest = jdbc.sql("SELECT " + COLUMNS + " FROM chat_turn "
-                        + "WHERE owner_id = :owner AND id < :before ORDER BY id DESC LIMIT :limit")
+        List<Turn> newest = jdbc.sql(TURNS + "WHERE t.owner_id = :owner AND t.id < :before ORDER BY t.id DESC LIMIT :limit")
                 .param("owner", owner).param("before", before == null ? Long.MAX_VALUE : before)
                 .param("limit", HISTORY_PAGE + 1).query(ChatMemory::turn).list();
         boolean more = newest.size() > HISTORY_PAGE;
@@ -53,8 +53,12 @@ class ChatMemory {
         if (request.requestId() == null || message.isEmpty() || message.length() > 2000) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请输入 1–2,000 字的消息。");
         }
+        String model = request.model();
+        if (model != null && (model.isBlank() || model.length() > 128)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择有效的聊天模型。");
+        }
         UUID requestId = request.requestId();
-        Turn saved = completed(owner, requestId, message);
+        Turn saved = completed(owner, requestId, message, model);
         if (saved != null) {
             return saved;
         }
@@ -62,14 +66,14 @@ class ChatMemory {
         List<Turn> recent = recent(owner, head);
         List<Context> recalled = recent.isEmpty() ? List.of() : recall(owner, recent.getFirst().id(), message);
         var prompt = new Prompt(message, recent.stream().map(turn -> new Context(turn.question(), turn.answer())).toList(),
-                recalled);
-        String answer = agent.chat(prompt);
+                recalled, model);
+        DocumentAgent.ChatAnswer answer = agent.chat(prompt);
 
         saved = transactions.execute(status -> {
             // Serialize commits for an account without holding a database lock during the model call.
             jdbc.sql("SELECT id FROM app_user WHERE id = :owner FOR UPDATE")
                     .param("owner", owner).query(Long.class).single();
-            Turn replay = completed(owner, requestId, message);
+            Turn replay = completed(owner, requestId, message, model);
             if (replay != null) {
                 return replay;
             }
@@ -78,8 +82,11 @@ class ChatMemory {
             }
             jdbc.sql("INSERT INTO chat_turn (owner_id, request_id, question, answer) VALUES (:owner, :id, :question, :answer)")
                     .param("owner", owner).param("id", requestId.toString()).param("question", message)
-                    .param("answer", answer).update();
-            return completed(owner, requestId, message);
+                    .param("answer", answer.answer()).update();
+            Turn turn = completed(owner, requestId, message, null);
+            jdbc.sql("INSERT INTO chat_turn_model (turn_id, model) VALUES (:turn, :model)")
+                    .param("turn", turn.id()).param("model", answer.model()).update();
+            return new Turn(turn.id(), turn.question(), turn.answer(), turn.createdAt(), answer.model());
         });
         if (saved.id() > head) {
             cache(owner, latest(owner, saved.id()));
@@ -87,11 +94,11 @@ class ChatMemory {
         return saved;
     }
 
-    private Turn completed(long owner, UUID requestId, String message) {
-        Turn saved = jdbc.sql("SELECT " + COLUMNS + " FROM chat_turn WHERE owner_id = :owner AND request_id = :request")
+    private Turn completed(long owner, UUID requestId, String message, String model) {
+        Turn saved = jdbc.sql(TURNS + "WHERE t.owner_id = :owner AND t.request_id = :request")
                 .param("owner", owner).param("request", requestId.toString()).query(ChatMemory::turn).optional().orElse(null);
-        if (saved != null && !saved.question().equals(message)) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT, "发送编号已用于另一条消息，请重新发送。");
+        if (saved != null && (!saved.question().equals(message) || (model != null && !model.equals(saved.model())))) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "发送编号已用于其他消息或模型，请重新发送。");
         }
         return saved;
     }
@@ -122,8 +129,7 @@ class ChatMemory {
     }
 
     private List<Turn> latest(long owner, long head) {
-        return jdbc.sql("SELECT " + COLUMNS + " FROM chat_turn "
-                        + "WHERE owner_id = :owner AND id <= :head ORDER BY id DESC LIMIT :limit")
+        return jdbc.sql(TURNS + "WHERE t.owner_id = :owner AND t.id <= :head ORDER BY t.id DESC LIMIT :limit")
                 .param("owner", owner).param("head", head).param("limit", RECENT_TURNS)
                 .query(ChatMemory::turn).list().reversed();
     }
@@ -151,12 +157,12 @@ class ChatMemory {
 
     private static Turn turn(ResultSet row, int index) throws SQLException {
         return new Turn(row.getLong("id"), row.getString("question"), row.getString("answer"),
-                row.getTimestamp("created_at").toInstant());
+                row.getTimestamp("created_at").toInstant(), row.getString("model"));
     }
 
-    record Send(UUID requestId, String message) {}
-    record Turn(long id, String question, String answer, Instant createdAt) {}
+    record Send(UUID requestId, String message, String model) {}
+    record Turn(long id, String question, String answer, Instant createdAt, String model) {}
     record Page(List<Turn> turns, Long nextBefore) {}
     record Context(String question, String answer) {}
-    record Prompt(String message, List<Context> recent, List<Context> recalled) {}
+    record Prompt(String message, List<Context> recent, List<Context> recalled, String model) {}
 }

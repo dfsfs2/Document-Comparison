@@ -77,22 +77,41 @@ class DocumentAgent {
         }
     }
 
-    String chat(ChatMemory.Prompt prompt) {
+    ChatAnswer chat(ChatMemory.Prompt prompt) {
         try {
             ChatAnswer result = client.post().uri("/chat").contentType(MediaType.APPLICATION_JSON)
                     .body(prompt).retrieve().body(ChatAnswer.class);
-            if (result != null && result.answer() != null && !result.answer().isBlank()) {
-                return result.answer();
+            if (result != null && result.answer() != null && !result.answer().isBlank()
+                    && result.model() != null && !result.model().isBlank() && result.model().length() <= 128
+                    && (prompt.model() == null || prompt.model().equals(result.model()))) {
+                return result;
             }
         } catch (RestClientResponseException error) {
             if (error.getStatusCode().value() == 503) {
                 throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "百炼 API Key 尚未配置。");
             }
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "百炼暂时无法回复，请稍后重试。", error);
+            if (error.getStatusCode().value() == 400) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "这个模型不在可选列表中，请刷新后重新选择。");
+            }
+            AgentError body = error.getStatusCode().value() == 502 ? error.getResponseBodyAs(AgentError.class) : null;
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                    body == null ? "百炼暂时无法回复，请稍后重试。" : body.detail(), error);
         } catch (RestClientException error) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "连接聊天服务失败，请稍后重试。", error);
         }
         throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "百炼返回了空回复，请重试。");
+    }
+
+    ChatModels chatModels() {
+        try {
+            ChatModels result = client.get().uri("/chat/models").retrieve().body(ChatModels.class);
+            if (result != null && result.models() != null && result.models().contains(result.defaultModel())) {
+                return result;
+            }
+        } catch (RestClientException error) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "无法读取聊天模型列表，请稍后重试。", error);
+        }
+        throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "无法读取聊天模型列表，请稍后重试。");
     }
 
     private static ResponseStatusException documentFailure(RestClientResponseException error) {
@@ -140,7 +159,8 @@ class DocumentAgent {
     }
 
     record AgentError(String detail) {}
-    private record ChatAnswer(String answer) {}
+    record ChatAnswer(String answer, String model) {}
+    record ChatModels(String defaultModel, List<String> models) {}
     record ExtractedText(String text) {}
     record Result(byte[] output, int paragraphs, int tables, String mode, List<String> rules, JsonNode report) {}
 }

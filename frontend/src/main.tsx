@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { ChatPage, type ChatHistory, type Turn } from './chat'
+import { ChatPage, type ChatHistory, type ChatModels, type Turn } from './chat'
 import { RagPage, type Rule, type SearchResult } from './rag'
 import { modeNames, ReportPage, reportLink, type Job, type JobReport } from './report'
 import './styles.css'
@@ -40,6 +40,10 @@ function loadRules() {
 
 function loadChat(before?: number) {
   return api<ChatHistory>(before === undefined ? '/chat' : `/chat?before=${before}`)
+}
+
+function loadChatModels() {
+  return api<ChatModels>('/chat/models')
 }
 
 function Icon({ type }: { type: 'logo' | 'doc' | 'arrow' | 'download' | 'history' | 'spark' }) {
@@ -191,7 +195,7 @@ function App() {
         <button className="text-button" onClick={() => { setRegister(!register); setError('') }} disabled={busy}>
           {register ? '已有账号？返回登录' : '没有账号？创建账号'}
         </button>
-      </section> : showChat && session ? <ChatPage key={username} load={loadChat}
+      </section> : showChat && session ? <ChatPage key={username} load={loadChat} loadModels={loadChatModels}
         send={request => mutate<Turn>('/chat', session, JSON.stringify(request), 'application/json')} />
         : showRag && session ? <RagPage load={loadRules}
         add={draft => mutate<Rule>('/knowledge', session, JSON.stringify(draft), 'application/json')}

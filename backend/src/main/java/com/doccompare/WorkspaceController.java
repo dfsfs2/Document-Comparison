@@ -71,6 +71,11 @@ class WorkspaceController {
         return chat.history(ownerId(user), before);
     }
 
+    @GetMapping("/chat/models")
+    DocumentAgent.ChatModels chatModels() {
+        return agent.chatModels();
+    }
+
     @PostMapping("/chat")
     ChatMemory.Turn chat(Principal user, @RequestBody ChatMemory.Send request) {
         return chat.send(ownerId(user), request);

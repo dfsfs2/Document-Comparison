@@ -34,6 +34,7 @@ services:
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
       DASHSCOPE_CHAT_MODEL: ${DASHSCOPE_CHAT_MODEL:-qwen-plus}
+      DASHSCOPE_CHAT_MODELS: ${DASHSCOPE_CHAT_MODELS-qwen-flash,qwen-max}
       DASHSCOPE_EMBEDDING_MODEL: ${DASHSCOPE_EMBEDDING_MODEL:-text-embedding-v4}
     volumes:
       - ./agent/knowledge.json:/app/knowledge.json:ro

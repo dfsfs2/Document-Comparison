@@ -43,3 +43,9 @@ CREATE TABLE IF NOT EXISTS chat_turn (
     INDEX chat_owner_turn (owner_id, id),
     FULLTEXT KEY chat_turn_search (question, answer) WITH PARSER ngram
 ) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4;
+
+CREATE TABLE IF NOT EXISTS chat_turn_model (
+    turn_id BIGINT NOT NULL PRIMARY KEY,
+    model VARCHAR(128) NOT NULL,
+    FOREIGN KEY (turn_id) REFERENCES chat_turn (id) ON DELETE CASCADE
+) DEFAULT CHARACTER SET utf8mb4;

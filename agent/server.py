@@ -2,6 +2,8 @@ import base64
 import hmac
 import json
 import logging
+import os
+from urllib.error import HTTPError
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
@@ -36,6 +38,7 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     recent: list[ConversationTurn] = Field(max_length=8)
     recalled: list[ConversationTurn] = Field(max_length=3)
+    model: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 KNOWLEDGE = TypeAdapter(list[KnowledgeRule])
@@ -52,9 +55,23 @@ def health():
     return {"status": "ok"}
 
 
+def available_chat_models(default):
+    extras = os.getenv("DASHSCOPE_CHAT_MODELS", "qwen-flash,qwen-max").split(",")
+    return list(dict.fromkeys([default, *(name.strip() for name in extras if name.strip())]))
+
+
+@app.get("/chat/models", dependencies=[Depends(authenticate)])
+def chat_models():
+    default = Bailian().chat_model
+    return {"defaultModel": default, "models": available_chat_models(default)}
+
+
 @app.post("/chat", dependencies=[Depends(authenticate)])
 def chat(request: ChatRequest):
     client = Bailian()
+    model = request.model if request.model is not None else client.chat_model
+    if model not in available_chat_models(client.chat_model):
+        raise HTTPException(400, "这个模型不在可选列表中，请刷新后重新选择。")
     if not client.key:
         raise HTTPException(503, "百炼 API Key 尚未配置，请检查 DASHSCOPE_API_KEY。")
     messages = [{"role": "system", "content": (
@@ -70,14 +87,16 @@ def chat(request: ChatRequest):
     messages.append({"role": "user", "content": request.message})
     try:
         result = client.post("/chat/completions", {
-            "model": client.chat_model, "enable_thinking": False, "max_tokens": 1536, "messages": messages,
+            "model": model, "enable_thinking": False, "max_tokens": 1536, "messages": messages,
         }, timeout=75)
         answer = result["choices"][0]["message"]["content"]
         if not isinstance(answer, str) or not answer.strip():
             raise ValueError("Empty chat completion")
-        return {"answer": answer.strip()[:8000]}
+        return {"answer": answer.strip()[:8000], "model": model}
     except (OSError, ValueError, TypeError, KeyError, IndexError) as error:
         LOG.warning("Bailian chat unavailable: %s", type(error).__name__)
+        if isinstance(error, HTTPError) and error.code in (400, 403, 404):
+            raise HTTPException(502, "当前模型暂时无法调用，请切换模型或检查百炼模型权限。") from error
         raise HTTPException(502, "百炼暂时无法回复，请稍后重试。") from error
 
 
