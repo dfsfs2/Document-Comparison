@@ -5,7 +5,7 @@ from zipfile import ZipFile, ZipInfo
 
 from advisor import Advisor
 from knowledge_import import extract_text
-from formatter import Document, InvalidDocument, W, content_projection, format_document, prop, val
+from formatter import A, Document, InvalidDocument, W, content_projection, format_document, prop, runs_of, text_of, val
 
 HEADER = b'<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>Original header</w:t></w:r></w:p></w:hdr>'
 TYPES = """<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -70,6 +70,64 @@ def package(body, styles="", extra_parts=()):
 
 
 class FormatTest(TestCase):
+    def test_transfers_chinese_font_and_turns_off_inherited_automatic_spacing(self):
+        reference_styles = """
+        <w:docDefaults><w:rPrDefault><w:rPr>
+          <w:rFonts w:eastAsiaTheme="minorEastAsia"/><w:lang w:eastAsia="zh-CN"/>
+        </w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:before="120"/></w:pPr></w:pPrDefault></w:docDefaults>
+        """
+        reference_parts = (
+            ("word/theme/theme1.xml", f'<a:theme xmlns:a="{A[1:-1]}"><a:minorFont><a:ea typeface=""/></a:minorFont></a:theme>'),
+            ("word/fontTable.xml", f'<w:fonts xmlns:w="{W[1:-1]}">'
+             '<w:font w:name="DengXian"><w:charset w:val="86"/></w:font>'
+             '<w:font w:name="Times New Roman"><w:charset w:val="00"/></w:font>'
+             '<w:font w:name="DengXian"><w:charset w:val="86"/></w:font></w:fonts>'),
+        )
+        target_styles = """
+        <w:style w:type="paragraph" w:default="1" w:styleId="Web">
+          <w:pPr><w:spacing w:line="480" w:beforeAutospacing="1" w:afterAutospacing="1"/></w:pPr>
+          <w:rPr><w:rFonts w:eastAsia="宋体"/></w:rPr>
+        </w:style>
+        """
+        body = "<w:p><w:r><w:t>这是一段测试正文。</w:t></w:r></w:p>"
+        target = package(body, target_styles)
+        output, _ = format_document(package(body, reference_styles, reference_parts), target, Advisor(False))
+        paragraph = Document(output).paragraphs[0]
+        fonts = prop(prop(prop(paragraph, "r"), "rPr"), "rFonts")
+        spacing = prop(prop(paragraph, "pPr"), "spacing")
+        self.assertEqual(fonts.get(W + "eastAsia"), "DengXian")
+        self.assertEqual(spacing.get(W + "line"), "240")
+        self.assertEqual(spacing.get(W + "beforeAutospacing"), "0")
+        self.assertEqual(spacing.get(W + "afterAutospacing"), "0")
+        self.assertEqual(content_projection(Document(output).root), content_projection(Document(target).root))
+
+    def test_maps_unstyled_numbered_headings_below_the_reference_cover_title(self):
+        reference_body = """
+        <w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:rPr><w:sz w:val="44"/></w:rPr><w:t>参照总标题</w:t></w:r></w:p>
+        <w:p><w:pPr><w:outlineLvl w:val="1"/></w:pPr><w:r><w:rPr><w:sz w:val="32"/></w:rPr><w:t>参照章节标题</w:t></w:r></w:p>
+        <w:p><w:pPr><w:outlineLvl w:val="2"/></w:pPr><w:r><w:rPr><w:sz w:val="28"/></w:rPr><w:t>参照小节标题</w:t></w:r></w:p>
+        <w:p><w:r><w:rPr><w:sz w:val="21"/></w:rPr><w:t>参照的正文段落。</w:t></w:r></w:p>
+        """
+        target_title = "（题　目）" + "这是必须保留的论文标题" * 5 + " （作　者）某某"
+        mixed = "1.研究目的 " + "标题和正文保存在同一个段落里。" * 8
+        target = package("".join(f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>" for text in
+                                 (target_title, "2.研究方法", "2.1文献资料法", mixed))
+                         + '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:docGrid w:type="lines" w:linePitch="312"/></w:sectPr>')
+        reference = package(reference_body + "<w:sectPr/>")
+        output, report = format_document(reference, target, Advisor(False))
+        formatted = Document(output)
+        sizes = [val(prop(prop(p, "r"), "rPr"), "sz") for p in formatted.paragraphs]
+        self.assertEqual(sizes, ["44", "32", "28", "21"])
+        title_runs = runs_of(formatted.paragraphs[0])
+        self.assertEqual([val(prop(run, "rPr"), "sz") for run in title_runs], ["44", "21"])
+        self.assertEqual([text_of(p) for p in formatted.paragraphs], [text_of(p) for p in Document(target).paragraphs])
+        self.assertIsNone(prop(prop(formatted.body, "sectPr"), "pgSz"))
+        self.assertIsNone(prop(prop(formatted.body, "sectPr"), "docGrid"))
+        self.assertEqual([change["property"] for change in report["report"]["locations"][-1]["changes"]],
+                         ["纸张尺寸", "文档网格"])
+        reapplied, _ = format_document(reference, output, Advisor(False))
+        self.assertEqual(reapplied, output)
+
     def test_applies_template_while_preserving_content_and_package_parts(self):
         original = package(TARGET_BODY)
         output, report = format_document(package(REFERENCE_BODY, REFERENCE_STYLES), original, Advisor(False))

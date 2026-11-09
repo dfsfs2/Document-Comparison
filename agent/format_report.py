@@ -11,7 +11,7 @@ LABELS = {
     "i": "斜体", "iCs": "复杂文字斜体", "color": "文字颜色", "r:spacing": "字符间距",
     "kern": "字距调整阈值", "sz": "字号", "szCs": "复杂文字字号",
     "tblBorders": "表格边框", "tblCellMar": "单元格边距", "pgSz": "纸张尺寸",
-    "pgMar": "页边距",
+    "pgMar": "页边距", "docGrid": "文档网格",
 }
 TOGGLES = {"keepNext", "keepLines", "widowControl", "contextualSpacing", "b", "bCs", "i", "iCs"}
 ALIGNMENT = {"left": "左对齐", "center": "居中", "right": "右对齐", "both": "两端对齐",
@@ -68,6 +68,10 @@ def describe(key, element):
         return size + ("，" + orientation.get(attrs["orient"], attrs["orient"]) if "orient" in attrs else "")
     if key == "pgMar":
         return "，".join(f"{EDGES.get(name, name)} {unit(v, 1440 / 2.54, ' cm')}" for name, v in sorted(attrs.items()))
+    if key == "docGrid":
+        modes = {"default": "默认", "lines": "行网格", "linesAndChars": "行和字符网格", "snapToChars": "字符对齐"}
+        mode = attrs.get("type", "default")
+        return modes.get(mode, mode) + ("，行距 " + unit(attrs["linePitch"], 20, " pt") if "linePitch" in attrs else "")
     if key == "p:spacing":
         fields = {"before": "段前", "after": "段后", "beforeLines": "段前", "afterLines": "段后",
                   "beforeAutospacing": "自动段前", "afterAutospacing": "自动段后"}

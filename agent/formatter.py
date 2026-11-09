@@ -17,9 +17,17 @@ P = ("keepNext", "keepLines", "widowControl", "pBdr", "shd", "spacing",
      "ind", "contextualSpacing", "jc", "textAlignment")
 R = ("rFonts", "b", "bCs", "i", "iCs", "color", "spacing", "kern", "sz", "szCs")
 TABLE = ("jc", "tblBorders", "shd", "tblCellMar")
-PAGE = ("pgSz", "pgMar")
+PAGE = ("pgSz", "pgMar", "docGrid")
 FONT_SLOTS = (("asciiTheme", "ascii"), ("hAnsiTheme", "hAnsi"),
               ("eastAsiaTheme", "eastAsia"), ("cstheme", "cs"))
+EAST_ASIAN_SCRIPTS = {
+    "zh-cn": ("Hans", "86"), "zh-sg": ("Hans", "86"), "zh-hans": ("Hans", "86"),
+    "zh-tw": ("Hant", "88"), "zh-hk": ("Hant", "88"), "zh-mo": ("Hant", "88"), "zh-hant": ("Hant", "88"),
+    "ja-jp": ("Jpan", "80"), "ko-kr": ("Hang", "81"),
+}
+TITLE_LABEL = re.compile(r"^(?:[（(]\s*(?:论文)?题\s*目\s*[）)]|(?:论文)?题\s*目\s*[:：])")
+AUTHOR_LABEL = re.compile(r"\s+(?=[（(]\s*作\s*者\s*[）)])")
+NUMBERED_HEADING = re.compile(r"([1-9][0-9]?(?:[.．][0-9]{1,2}){0,8})([.．、)）]?\s*)([^\W\d_].*)")
 PROPERTY_GROUPS = {"pPr": P, "rPr": R, "tblPr": TABLE, "sectPr": PAGE}
 # Full sibling order for ordered property groups.
 ORDERS = {
@@ -108,11 +116,18 @@ class Document:
                     raise InvalidDocument("文档缺少可识别的 Word 正文。")
                 self.styles = self.read_optional(archive, "word/styles.xml")
                 self.theme = self.read_optional(archive, "word/theme/theme1.xml")
+                font_table = self.read_optional(archive, "word/fontTable.xml")
         except (BadZipFile, KeyError, xml.XMLSyntaxError, NotImplementedError, OSError) as error:
             raise InvalidDocument("无法读取文档。请另存为标准 .docx 后重试。") from error
         self.data = data
         self.style_map = {s.get(W + "styleId"): s for s in self.styles.findall(W + "style")}
         self.defaults = prop(self.styles, "docDefaults")
+        language = prop(prop(prop(self.defaults, "rPrDefault"), "rPr"), "lang")
+        locale = language.get(W + "eastAsia", "").lower() if language is not None else ""
+        self.east_asia_script, charset = EAST_ASIAN_SCRIPTS.get(locale, ("Hans", None))
+        matching_fonts = {font.get(W + "name") for font in font_table.findall(W + "font")
+                          if font.get(W + "name") and val(font, "charset").lower() == charset}
+        self.east_asia_font = next(iter(matching_fonts)) if len(matching_fonts) == 1 else ""
         self.default_p = next((s.get(W + "styleId") for s in self.style_map.values()
                                if s.get(W + "type") == "paragraph"
                                and s.get(W + "default") in ("1", "true")), "")
@@ -164,6 +179,37 @@ def runs_of(paragraph):
             and not any(parent.tag in (W + "del", W + "moveFrom") for parent in run.iterancestors())]
 
 
+def title_author_runs(paragraph):
+    text = text_of(paragraph)
+    match = AUTHOR_LABEL.search(text) if TITLE_LABEL.match(text.lstrip()) else None
+    if match is None:
+        return []
+    runs = runs_of(paragraph)
+    if "".join(map(text_of, runs)) != text:
+        return []
+    offset = match.start()
+    for index, run in enumerate(runs):
+        length = len(text_of(run))
+        if offset == 0:
+            return runs[index:]
+        if offset < length:
+            parts = run.findall(W + "t")
+            if (len(parts) != 1 or any(child.tag not in (W + "rPr", W + "t") for child in run)
+                    or prop(prop(run, "rPr"), "rPrChange") is not None):
+                return []
+            tail = deepcopy(run)
+            tail_text = prop(tail, "t")
+            tail_text.text = parts[0].text[offset:]
+            tail_text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+            parts[0].text = parts[0].text[:offset]
+            run.addnext(tail)
+            if text_of(paragraph) != text:
+                raise RuntimeError("Title formatting changed document text")
+            return [tail, *runs[index + 1:]]
+        offset -= length
+    return []
+
+
 def merge(groups, keys, *, toggles=False):
     result = {}
     for group in groups:
@@ -192,7 +238,8 @@ def merge(groups, keys, *, toggles=False):
     return result
 
 
-def materialize_theme(properties, theme):
+def materialize_theme(properties, document):
+    theme = document.theme
     fonts = properties.get("rFonts")
     if fonts is not None:
         for attribute, slot in FONT_SLOTS:
@@ -204,8 +251,9 @@ def materialize_theme(properties, theme):
             element = theme.find(f".//{A}{family}/{A}{script}")
             typeface = element.get("typeface") if element is not None else ""
             if slot == "eastAsia" and not typeface:
-                element = theme.find(f".//{A}{family}/{A}font[@script='Hans']")
-                typeface = element.get("typeface") if element is not None else ""
+                element = theme.find(f".//{A}{family}/{A}font[@script='{document.east_asia_script}']")
+                typeface = (element.get("typeface") if element is not None else ""
+                            ) or fonts.get(W + slot) or document.east_asia_font
             if typeface:
                 fonts.set(W + slot, typeface)
     color_aliases = {"text1": "dk1", "text2": "dk2", "background1": "lt1",
@@ -246,8 +294,13 @@ def paragraph_properties(document, pp, styles):
         paragraph_props["jc"] = node("jc", val="left")
     if "ind" not in paragraph_props:
         paragraph_props["ind"] = node("ind", left="0", right="0", firstLine="0")
-    paragraph_props.setdefault("spacing", node("spacing", before="0", after="0", line="240", lineRule="auto"))
-    return materialize_theme(paragraph_props, document.theme)
+    spacing = paragraph_props.setdefault("spacing", node("spacing"))
+    # Omitted values would inherit the target's line and automatic paragraph spacing.
+    for attr, default in (("before", "0"), ("after", "0"), ("line", "240"), ("lineRule", "auto"),
+                          ("beforeAutospacing", "0"), ("afterAutospacing", "0")):
+        if spacing.get(W + attr) is None:
+            spacing.set(W + attr, default)
+    return materialize_theme(paragraph_props, document)
 
 
 def run_properties(document, run, styles):
@@ -262,7 +315,7 @@ def run_properties(document, run, styles):
                          ("color", "auto"), ("sz", "22"), ("spacing", "0"), ("kern", "0")):
         merged_run.setdefault(key, node(key, val=default))
     merged_run.setdefault("szCs", node("szCs", val=merged_run["sz"].get(W + "val")))
-    return materialize_theme(merged_run, document.theme)
+    return materialize_theme(merged_run, document)
 
 
 def style_for(document, paragraph):
@@ -277,7 +330,7 @@ def table_properties(document, table):
     direct = prop(table, "tblPr")
     styles = document.chain(val(direct, "tblStyle"))
     properties = merge([*(prop(style, "tblPr") for style in styles), direct], TABLE)
-    return materialize_theme(properties, document.theme)
+    return materialize_theme(properties, document)
 
 
 def group_for(name, properties):
@@ -312,20 +365,43 @@ def classify(document, paragraph):
     return "body"
 
 
+def numbered_heading(sample):
+    if len(sample) > 72 or re.search(r"[。！？!?；;\r\n]|[.]$", sample):
+        return None
+    match = NUMBERED_HEADING.fullmatch(sample)
+    if match is None:
+        return None
+    number, separator, title = match.groups()
+    depth = len(re.split(r"[.．]", number))
+    if not separator and (depth == 1 or not re.match(r"[\u3400-\u9fff]", title)):
+        return None
+    return depth
+
+
 def paragraph_roles(document, advisor):
     roles = [classify(document, p) for p in document.paragraphs]
+    texts = [text_of(p).strip() for p in document.paragraphs]
+    numbered = {i: depth for i, (role, sample) in enumerate(zip(roles, texts))
+                if role == "body" and (depth := numbered_heading(sample)) is not None}
+    # Repeated numbering gives stronger evidence of headings than an isolated short numeric phrase.
+    if len(numbered) < 2:
+        numbered.clear()
     snippets = {}
-    for i, paragraph in enumerate(document.paragraphs):
-        sample = text_of(paragraph).strip()
-        if roles[i] == "body" and 0 < len(sample) <= 90:
-            if i == 0 and len(sample) <= 45 and not re.search(r"[。！？.!?；;：:]", sample):
-                roles[i] = "title"
-            elif len(snippets) < 32:
-                snippets[i] = sample
+    first_text = next((i for i, sample in enumerate(texts) if sample), None)
+    for i, sample in enumerate(texts):
+        if roles[i] != "body" or not sample:
+            continue
+        if i in numbered:
+            roles[i] = f"heading-{numbered[i]}"
+        elif i == first_text and (len(sample) <= 120 and TITLE_LABEL.match(sample)
+                                  or len(sample) <= 45 and not re.search(r"[。！？.!?；;：:]", sample)):
+            roles[i] = "title"
+        elif len(sample) <= 90 and len(snippets) < 32:
+            snippets[i] = sample
     cloud_roles = advisor.classify(snippets)
     for index, role in cloud_roles.items():
         roles[index] = role
-    return roles, cloud_roles
+    return roles, cloud_roles, numbered
 
 
 def replace_properties(parent, name, properties, keys):
@@ -385,14 +461,18 @@ def load_document(data, role):
 def format_document(reference_data, target_data, advisor):
     reference = load_document(reference_data, "参照文档")
     target = load_document(target_data, "目标文档")
-    reference_roles, _ = paragraph_roles(reference, advisor)
-    target_roles, cloud_roles = paragraph_roles(target, advisor)
+    reference_roles, _, _ = paragraph_roles(reference, advisor)
+    target_roles, cloud_roles, numbered = paragraph_roles(target, advisor)
     candidates = defaultdict(list)
     for index, (paragraph, role) in enumerate(zip(reference.paragraphs, reference_roles), 1):
         if text_of(paragraph).strip():
             candidates[role].append((index, paragraph))
     if not candidates:
         raise InvalidDocument("参照文档需要至少一个包含文字的段落。")
+    # Some templates use Heading 1 for the cover title and Heading 2 for the first section level.
+    cover_heading = (next(iter(candidates)) == "heading-1" and len(candidates["heading-1"]) == 1
+                     and "title" not in candidates and "heading-2" in candidates
+                     and numbered_heading(text_of(candidates["heading-1"][0][1]).strip()) is None)
     samples = {}
     for role, paragraphs in candidates.items():
         # Repeated formats take precedence over a one-off direct override.
@@ -403,6 +483,11 @@ def format_document(reference_data, target_data, advisor):
         selected = signatures.index(most_common)
         samples[role] = paragraphs[selected][0], styles[selected]
 
+    author_runs = set()
+    if "body" in samples and ("title" in samples or cover_heading):
+        for paragraph, role in zip(target.paragraphs, target_roles):
+            if role == "title":
+                author_runs.update(title_author_runs(paragraph))
     before = content_projection(target.root)
     report = FormatReport()
     changed_paragraphs = 0
@@ -410,7 +495,15 @@ def format_document(reference_data, target_data, advisor):
         runs = runs_of(paragraph)
         if not runs:
             continue
-        sample_role = role if role in samples else {"table-header": "table", "list": "body"}.get(role)
+        cover_role = None
+        if cover_heading:
+            if role == "title":
+                cover_role = "heading-1"
+            elif index - 1 in numbered:
+                cover_role = f"heading-{numbered[index - 1] + 1}"
+        sample_role = cover_role if cover_role in samples else role
+        if sample_role not in samples:
+            sample_role = {"table-header": "table", "list": "body"}.get(role)
         if sample_role not in samples:
             continue
         source_index, (paragraph_props, run_props) = samples[sample_role]
@@ -424,19 +517,25 @@ def format_document(reference_data, target_data, advisor):
         run_changes = RunChanges()
         for run in runs:
             old_run = run_properties(target, run, styles)
+            run_sample = samples["body"][1][1] if run in author_runs else run_props
             keep = mixed.copy()
             if next(run.iterancestors(W + "hyperlink"), None) is not None:
                 keep.add("color")
-            replace_properties(run, "rPr", {k: v for k, v in run_props.items() if k not in keep},
+            replace_properties(run, "rPr", {k: v for k, v in run_sample.items() if k not in keep},
                                tuple(key for key in R if key not in keep))
             run_changes.add(old_run, run_properties(target, run, styles))
         changes = property_changes(old_paragraph, paragraph_properties(target, prop(paragraph, "pPr"), styles), "p:")
         changes.extend(run_changes.summarize())
         method = "百炼辅助识别" if index - 1 in cloud_roles else "本地识别"
         reason = f"{method}为{ROLES[role]}，匹配参照文档第 {source_index} 个段落的{ROLES[sample_role]}样式。"
-        if role != sample_role:
+        if cover_role == sample_role:
+            reason = (f"{method}为{ROLES[role]}，按参照文档的章节层级，"
+                      f"匹配第 {source_index} 个段落的{ROLES[sample_role]}样式。")
+        elif role != sample_role:
             reason = (f"{method}为{ROLES[role]}，参照文档缺少对应样式，"
                       f"沿用参照文档第 {source_index} 个段落的{ROLES[sample_role]}样式。")
+        if author_runs.intersection(runs):
+            reason += "同段的作者信息使用参照文档的正文字符格式。"
         report.add("paragraph", index, reason, changes, text_of(paragraph))
         changed_paragraphs += 1
 
@@ -464,7 +563,7 @@ def format_document(reference_data, target_data, advisor):
             source_index = min(index, len(reference_sections) - 1)
             old_section = merge([section], PAGE)
             props = merge([reference_sections[source_index]], PAGE)
-            replace_group(section, "sectPr", props, tuple(props))
+            replace_group(section, "sectPr", props, PAGE)
             reason = f"按节的顺序套用参照文档第 {source_index + 1} 节的页面设置。"
             if source_index < index:
                 reason = f"参照文档没有同序的节，沿用它的最后一节（第 {source_index + 1} 节）的页面设置。"
